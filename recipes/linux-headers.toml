@@ -1,0 +1,19 @@
+# The kernel's userspace API headers. glibc is compiled against these, so they
+# come before it and before any compiler that has a libc to link.
+name = "linux-headers"
+version = "6.18.49"
+kind = "target"
+
+[source]
+url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.49.tar.xz"
+sha256 = "ae826f33111fea6f1d279dde7299d7463c8dfd204aeb75a8fb5432bc60a28191"
+
+[build]
+system = "make"
+# No build step: headers_install does its own work.
+make = []
+install = ["headers_install"]
+
+[build.env]
+ARCH = "$KARCH"
+INSTALL_HDR_PATH = "$OUT/usr"

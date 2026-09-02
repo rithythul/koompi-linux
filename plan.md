@@ -27,6 +27,9 @@ Building a native toolchain and rebuilding the world under it is the first thing
 Build-time tools — a host compiler, make, perl, python, elfutils, coreutils — come from one OCI image referenced by digest, never by tag.
 It is a scaffold: it builds our cross toolchains and nothing it contains reaches an image.
 
+Concretely: `seed/Containerfile` pins its own base by digest, and the image it produces is pinned by the id in `seed/DIGEST`, which is what `kb` passes to podman.
+A local image has no registry digest until it is pushed, so the id is the pin until there is somewhere to push it.
+
 This is a call the spec left open, and it buys two things.
 The recipe budget is spent on what ships rather than on autotools.
 And "seed" becomes a single pinned artifact that can be swapped or diffed, instead of whatever happens to be installed on the machine.
@@ -132,7 +135,11 @@ Day 1 is 2026-09-02. Days are working days.
 ### M1 — one recipe set, two cross toolchains (D1–D5)
 
 `kb build` end to end: parse, graph, fetch, build in the seed container, content-addressed store.
-Recipes: `linux-headers`, `binutils`, `gcc`, `glibc` — with `gcc` staged internally rather than as separate recipes.
+Recipes: `binutils`, `linux-headers`, `gcc-bootstrap`, `glibc`, `gcc`.
+
+That is five, where this plan first said four with gcc staged internally.
+It cannot be four: glibc has to be built by a C compiler, and the full compiler has to be built against glibc, so glibc sits *between* the two gcc passes and each pass is a node in the graph.
+Correcting it here rather than quietly building five.
 
 **Exit:** `kb build gcc --target x86_64-cloud` and `--target aarch64-headless` are both green from an empty store, from one recipe set, with `kb lint` clean.
 Criterion 3 is proven at the toolchain, where it is hardest, on day five.

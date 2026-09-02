@@ -1,0 +1,5 @@
+# Gate 0 target one. Everything that differs from the other target is here.
+name = "x86_64-cloud"
+triple = "x86_64-koompi-linux-gnu"
+arch = "x86_64"
+kernel_arch = "x86"

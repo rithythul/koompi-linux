@@ -1,0 +1,6 @@
+# Gate 0 target two. Deliberately dissimilar to the other target in
+# architecture and, from M2, in userland shape.
+name = "aarch64-headless"
+triple = "aarch64-koompi-linux-gnu"
+arch = "aarch64"
+kernel_arch = "arm64"

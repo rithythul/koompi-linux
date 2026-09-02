@@ -1,0 +1,10 @@
+[package]
+name = "kb"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The KOOMPI Linux build engine: recipes in, images out"
+
+# No dependencies. spec.md: an external crate needs a dependency-register row.
+[dependencies]

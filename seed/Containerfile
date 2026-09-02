@@ -1,0 +1,28 @@
+# The seed: build tools only. Nothing here reaches a KOOMPI image.
+#
+# Referenced everywhere by the digest in seed/DIGEST, never by tag.
+# The base is pinned by digest; apt versions inside are not, which is why the
+# digest of *this* image is the pin that matters. Rebuilding it on another
+# machine will not reproduce the digest, and that is acceptable until Gate 0
+# clears -- see spec.md, "Reproducibility is a goal, not yet a gate".
+FROM docker.io/library/debian@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential \
+      bison flex texinfo gawk m4 perl python3 \
+      libgmp-dev libmpfr-dev libmpc-dev libisl-dev \
+      libelf-dev libssl-dev zlib1g-dev \
+      autoconf automake libtool pkgconf gettext \
+      bc kmod cpio rsync patch file \
+      bzip2 xz-utils zstd \
+      meson ninja-build cmake \
+      dosfstools mtools \
+      ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+# Builds run as the invoking user via --userns=keep-id, so nothing here
+# assumes root, and no output is left container-owned. Attempt three had to
+# clean up uid-100997 directories with `podman unshare`; this avoids that.
+WORKDIR /work

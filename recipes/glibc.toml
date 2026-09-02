@@ -1,0 +1,29 @@
+# spec.md decision 1: glibc, not musl. Attempt one changed libc mid-flight and
+# paid for it in flag-day breakage of the strptime kind.
+name = "glibc"
+version = "2.44"
+kind = "target"
+
+[source]
+url = "https://ftp.gnu.org/gnu/glibc/glibc-2.44.tar.xz"
+sha256 = "37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667"
+
+[build]
+system = "configure"
+configure = [
+  "--prefix=/usr",
+  "--host=$TRIPLE",
+  "--build=$BUILD_TRIPLE",
+  "--with-headers=$SYSROOT/usr/include",
+  "--libdir=/usr/lib",
+  "--libexecdir=/usr/lib",
+  "--disable-nscd",
+  "--disable-werror",
+  "libc_cv_slibdir=/usr/lib",
+]
+# Installed with a prefix of /usr into a staging root, so the store entry is a
+# sysroot fragment rather than something that has to be relocated.
+install = ["DESTDIR=$OUT", "install"]
+
+[deps]
+build = ["binutils", "gcc-bootstrap", "linux-headers"]

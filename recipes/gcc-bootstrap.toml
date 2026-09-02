@@ -1,0 +1,39 @@
+# A C compiler good enough to build glibc, and nothing more. It is built
+# without a libc, which is why it can exist before one does.
+#
+# spec.md decision 6 calls for a seed that gets discarded. This is the hinge:
+# below it the seed container's compiler is doing the work, above it ours is.
+name = "gcc-bootstrap"
+version = "15.3.0"
+kind = "host-tool"
+
+[source]
+url = "https://ftp.gnu.org/gnu/gcc/gcc-15.3.0/gcc-15.3.0.tar.xz"
+sha256 = "fa59c1beef8995f27c4d71c1df227587189315d3e6faff1bb4306e61b0c530eb"
+
+[build]
+system = "configure"
+configure = [
+  "--prefix=$OUT",
+  "--target=$TRIPLE",
+  "--with-sysroot=$SYSROOT",
+  "--with-glibc-version=2.44",
+  "--with-newlib",
+  "--without-headers",
+  "--enable-languages=c",
+  "--enable-default-pie",
+  "--enable-default-ssp",
+  "--disable-nls",
+  "--disable-shared",
+  "--disable-multilib",
+  "--disable-threads",
+  "--disable-libatomic",
+  "--disable-libgomp",
+  "--disable-libquadmath",
+  "--disable-libssp",
+  "--disable-libvtv",
+  "--disable-libstdcxx",
+]
+
+[deps]
+build = ["binutils"]
