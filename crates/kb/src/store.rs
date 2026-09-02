@@ -18,7 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Bumped when the engine changes how it builds, invalidating every store entry.
-const ENGINE: &str = "kb-build-v1";
+const ENGINE: &str = "kb-build-v2";
 
 pub const MARKER: &str = ".kb-ok";
 

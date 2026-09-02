@@ -267,6 +267,26 @@ pub fn script(
         if !path_extra.is_empty() {
             s.push_str(&format!("export PATH=\"{}:$PATH\"\n", path_extra.join(":")));
         }
+
+        // The seed's own gcc, g++ and ar are on PATH, because the seed is
+        // where make, perl and sed come from. Nothing stops a target build
+        // from picking them up: glibc's configure found the host g++, decided
+        // C++ was available, and then failed at link time with `cannot find
+        // -lstdc++` because the *cross* linker was doing the linking.
+        //
+        // So a target build is told which toolchain is its own. A recipe can
+        // still override any of these, because recipe env is emitted after.
+        //
+        // LD is deliberately absent: builds are expected to link through the
+        // compiler driver, and setting LD confuses libtool more than it helps.
+        if recipe.kind == Kind::Target {
+            for tool in ["CC=gcc", "CXX=g++", "AR=ar", "RANLIB=ranlib", "NM=nm",
+                         "STRIP=strip", "OBJCOPY=objcopy", "OBJDUMP=objdump",
+                         "READELF=readelf"] {
+                let (name, bin) = tool.split_once('=').expect("literal has an =");
+                s.push_str(&format!("export {name}=\"$TRIPLE-{bin}\"\n"));
+            }
+        }
         for (k, v) in &recipe.build.env {
             s.push_str(&format!("export {k}=\"{v}\"\n"));
         }
@@ -455,6 +475,29 @@ mod tests {
         let s = render(&recipe(System::Configure, None, None), &deps);
         assert!(s.contains("export PATH=\"/kb/store/aaa-binutils-2.47/bin:$PATH\""), "{s}");
         assert!(!s.contains("bbb-glibc-2.44"), "a sysroot package reached PATH:\n{s}");
+    }
+
+    #[test]
+    fn a_target_build_is_pointed_at_the_cross_toolchain() {
+        let s = render(&recipe(System::Configure, None, None), &[]);
+        assert!(s.contains("export CC=\"$TRIPLE-gcc\""), "{s}");
+        assert!(s.contains("export CXX=\"$TRIPLE-g++\""), "{s}");
+        assert!(s.contains("export RANLIB=\"$TRIPLE-ranlib\""), "{s}");
+        // Linking goes through the compiler driver; setting LD confuses libtool.
+        assert!(!s.contains("export LD="), "{s}");
+        // The recipe's own env comes after, so it can override any of them.
+        // Matched on the recipe's line specifically: the engine exports an
+        // ARCH of its own earlier, and find() would have returned that one.
+        let recipe_env = s.find(r#"export ARCH="$KARCH""#).expect("recipe env");
+        assert!(s.find("export CC=").unwrap() < recipe_env, "{s}");
+    }
+
+    #[test]
+    fn a_host_tool_build_uses_the_seed_compiler() {
+        let mut r = recipe(System::Configure, None, None);
+        r.kind = Kind::HostTool;
+        let s = render(&r, &[]);
+        assert!(!s.contains("export CC="), "a host tool was cross-configured:\n{s}");
     }
 
     #[test]
