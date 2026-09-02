@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Does the built cross toolchain actually produce binaries for its target?
 #
-# M1's exit criterion is a toolchain, and "it compiled" is not the same claim
-# as "it produces target code linked against our glibc". This asks the second
-# question. It does not run anything: that is M2's job, in QEMU.
+# This runs *inside the seed container*, with the same mounts a build gets,
+# and that is not a detail. A cross compiler bakes absolute paths into itself:
+# its sysroot is /kb/sysroot and its assembler is /kb/store/<id>/bin/..., and
+# neither exists on the host. Run these checks outside a container and gcc
+# silently falls back to whatever the host has, which is exactly the bug this
+# script exists to catch.
+#
+# It does not run the binaries it builds: that is M2's job, in QEMU.
 #
 # Usage: crates/kb/tests/toolchain.sh <target>
 set -euo pipefail
@@ -17,7 +22,7 @@ triple=$("$kb" targets | awk -v t="$target" '$1 == t { print $2 }')
 [ -n "$triple" ] || { echo "no target $target" >&2; exit 1; }
 
 # The ELF machine each architecture should produce, as readelf spells it.
-# Explicit rather than derived: a check that computes the answer the same way
+# Explicit rather than derived: a check that computes its answer the same way
 # the thing under test does is not a check.
 case "${triple%%-*}" in
     x86_64)  want_machine="Advanced Micro Devices X86-64" ;;
@@ -27,91 +32,80 @@ esac
 
 gccdir=$("$kb" build gcc --target "$target" | tail -1)
 sysroot=$("$kb" sysroot gcc --target "$target")
-cc="$gccdir/bin/$triple-gcc"
-cxx="$gccdir/bin/$triple-g++"
-
-# binutils has its own store entry, and only the one for this target has a
-# readelf under this triple, so the glob cannot pick the wrong architecture.
-readelf=$(ls "$gccdir"/../*binutils*/bin/"$triple"-readelf 2>/dev/null | head -1)
-[ -x "$readelf" ] || { echo "no $triple-readelf in the store" >&2; exit 1; }
-
-# gcc's driver finds the cross assembler and linker on PATH, because binutils
-# has its own store entry rather than sharing gcc's prefix. The engine puts
-# every host-tool dependency on PATH inside the container; this reproduces
-# that, and without it the driver fails with "cannot find 'ld'".
-export PATH="$(dirname "$readelf"):$PATH"
-
-work=$(mktemp -d "${TMPDIR:-/tmp}/kb-toolchain.XXXXXX")
-trap 'rm -rf "$work"' EXIT
-
-fails=0
-check() {
-    if [ "$2" = "$3" ]; then echo "  ok   $1"
-    else echo "  FAIL $1: expected [$3], got [$2]"; fails=$((fails + 1)); fi
-}
-ok() {
-    if "${@:2}" >"$work/cmd.log" 2>&1; then echo "  ok   $1"
-    else echo "  FAIL $1"; sed 's/^/         /' "$work/cmd.log"; fails=$((fails + 1)); fi
-}
 
 echo "toolchain: $target ($triple)"
 echo "  gcc:     $gccdir"
 echo "  sysroot: $sysroot"
 echo
 
-check "the compiler knows its own target" "$("$cc" -dumpmachine)" "$triple"
+# Mounts mirror crates/kb/src/build.rs. If those change, change these.
+podman run --rm --network=none \
+    -v "$(dirname "$gccdir"):/kb/store:ro" \
+    -v "$sysroot:/kb/sysroot:ro" \
+    -e TRIPLE="$triple" \
+    -e GCCID="$(basename "$gccdir")" \
+    -e WANT_MACHINE="$want_machine" \
+    "$(cat seed/DIGEST)" bash -euo pipefail -s <<'INSIDE'
+fails=0
+check() {
+    if [ "$2" = "$3" ]; then echo "  ok   $1"
+    else echo "  FAIL $1: expected [$3], got [$2]"; fails=$((fails + 1)); fi
+}
+ok() {
+    if "${@:2}" >/tmp/cmd.log 2>&1; then echo "  ok   $1"
+    else echo "  FAIL $1"; sed 's/^/         /' /tmp/cmd.log; fails=$((fails + 1)); fi
+}
 
-# The one that hid: gcc looks for an unprefixed `as` and falls back to PATH,
-# where the seed has its own. When the seed's architecture matches the target
-# it works, and everything is quietly assembled by the seed's binutils.
-as_used=$("$cc" -print-prog-name=as)
+cc="/kb/store/$GCCID/bin/$TRIPLE-gcc"
+cxx="/kb/store/$GCCID/bin/$TRIPLE-g++"
+readelf=$(ls /kb/store/*binutils*/bin/"$TRIPLE"-readelf | head -1)
+
+check "the compiler knows its own target" "$("$cc" -dumpmachine)" "$TRIPLE"
+
+# The one that hid on x86_64: gcc's driver looks for an unprefixed `as`, and
+# the seed has one. Where the seed's architecture matches the target it works,
+# and everything is quietly assembled by the seed's binutils. --with-as bakes
+# an absolute path in, and gcc uses it only if that path is executable -- so
+# this check is only meaningful in here, where the store is mounted.
 check "the assembler is ours, not the seed's" \
-    "$(case "$as_used" in "$(dirname "$gccdir")"/*) echo yes ;; *) echo "no: $as_used" ;; esac)" \
+    "$(case "$("$cc" -print-prog-name=as)" in /kb/store/*) echo yes ;; *) echo "no: $("$cc" -print-prog-name=as)" ;; esac)" \
     "yes"
 
-cat > "$work/hello.c" <<'C'
+cat > /tmp/hello.c <<'C'
 #include <stdio.h>
 int main(void) { printf("hello from %s\n", "koompi"); return 0; }
 C
-cat > "$work/hello.cc" <<'CC'
+cat > /tmp/hello.cc <<'CC'
 #include <string>
 #include <iostream>
 int main() { std::string s = "koompi"; std::cout << s << "\n"; return 0; }
 CC
 
-# --sysroot on the command line: the one compiled in points at the path the
-# build container mounts, which does not exist out here.
-ok "C compiles and links against our glibc" \
-    "$cc" --sysroot="$sysroot" "$work/hello.c" -o "$work/hello"
-ok "C links statically" \
-    "$cc" --sysroot="$sysroot" -static "$work/hello.c" -o "$work/hello-static"
-ok "C++ compiles and links against our libstdc++" \
-    "$cxx" --sysroot="$sysroot" "$work/hello.cc" -o "$work/hello-cc"
+# No --sysroot: the one compiled into gcc is /kb/sysroot, and it is mounted.
+ok "C compiles and links against our glibc" "$cc" /tmp/hello.c -o /tmp/hello
+ok "C links statically" "$cc" -static /tmp/hello.c -o /tmp/hello-static
+ok "C++ compiles and links against our libstdc++" "$cxx" /tmp/hello.cc -o /tmp/hello-cc
 
-if [ -f "$work/hello" ]; then
+if [ -f /tmp/hello ]; then
     check "the output is for the target architecture" \
-        "$("$readelf" -h "$work/hello" | awk -F: '/Machine:/ { sub(/^ +/, "", $2); print $2 }')" \
-        "$want_machine"
+        "$("$readelf" -h /tmp/hello | awk -F: '/Machine:/ { sub(/^ +/, "", $2); print $2 }')" \
+        "$WANT_MACHINE"
+
     # gcc bakes a per-architecture interpreter path -- /lib64/ld-linux-x86-64.so.2
     # on x86_64, /lib/ld-linux-aarch64.so.1 on aarch64 -- while glibc installs
-    # the loader under /usr/lib. Overriding that in a recipe would mean naming
-    # an architecture in a recipe, which is exactly what criterion 3 forbids,
-    # so the image supplies /lib and /lib64 as symlinks to usr/lib instead.
-    # What the toolchain has to get right is the file name.
-    interp=$("$readelf" -l "$work/hello" |
+    # the loader under /usr/lib. Overriding that in a recipe would mean naming an
+    # architecture in a recipe, which criterion 3 forbids, so the image supplies
+    # /lib and /lib64 as symlinks. What the toolchain must get right is the name.
+    interp=$("$readelf" -l /tmp/hello |
              sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p')
     check "the interpreter it asks for is the one glibc installed" \
-        "$([ -f "$sysroot/usr/lib/$(basename "$interp")" ] && echo yes || echo "no: $interp")" \
+        "$([ -f "/kb/sysroot/usr/lib/$(basename "$interp")" ] && echo yes || echo "no: $interp")" \
         "yes"
+
     check "it needs our libc" \
-        "$("$readelf" -d "$work/hello" | grep -c 'Shared library: \[libc\.so\.6\]' || true)" \
-        "1"
+        "$("$readelf" -d /tmp/hello | grep -c 'Shared library: \[libc\.so\.6\]' || true)" "1"
 fi
 
 echo
-if [ "$fails" -eq 0 ]; then
-    echo "toolchain.sh: $target verified"
-else
-    echo "toolchain.sh: $fails check(s) failed"
-    exit 1
-fi
+if [ "$fails" -eq 0 ]; then echo "verified"; else echo "$fails check(s) failed"; exit 1; fi
+INSIDE

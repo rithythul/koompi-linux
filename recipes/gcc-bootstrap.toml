@@ -18,11 +18,13 @@ configure = [
   "--target=$TRIPLE",
   "--with-sysroot=$SYSROOT",
   # gcc's driver looks for an unprefixed `as` and `ld`, and the seed has both
-  # on PATH. On $ARCH matching the host that silently works and the seed's
-  # binutils quietly assembles everything; on a different architecture it fails
-  # with `as: unrecognized option`. binutils installs unprefixed tools under
-  # $prefix/$TRIPLE/bin, which is exactly what this option wants.
-  "--with-build-time-tools=$KB_BINUTILS/$TRIPLE/bin",
+  # on PATH. Where the seed's architecture matches the target that silently
+  # works and the seed's binutils quietly assembles everything; where it does
+  # not, it fails with `as: unrecognized option`. These two bake an absolute
+  # path into the driver, which is the only thing that survives installation.
+  # (--with-build-time-tools does not: it only affects gcc's own build.)
+  "--with-as=$KB_BINUTILS/bin/$TRIPLE-as",
+  "--with-ld=$KB_BINUTILS/bin/$TRIPLE-ld",
   "--with-glibc-version=2.44",
   "--with-newlib",
   "--without-headers",
