@@ -117,7 +117,16 @@ check "no store entry is left" "$(ls "$repo/build/store" | wc -l)" "$before"
 check "the work dir is kept for debugging" "$(ls "$repo/build/work" | wc -l)" "1"
 contains "the failure is recorded" "$(tail -1 "$repo/build/builds.tsv")" "fail"
 
-echo "6. a recipe that names an architecture is refused"
+echo "6. a build that installs nothing is a failure, not a success"
+# `make all` succeeds and puts its output in the build tree, never in $OUT.
+write_recipe "$sum" 'install = ["all"]'
+before=$(ls "$repo/build/store" | wc -l)
+out=$("$kb" build hello --target testtarget 2>&1 || true)
+contains "says what went wrong" "$out" "installed nothing into \$OUT"
+contains "and points at the likely cause" "$out" "where the command line always wins"
+check "no store entry is left" "$(ls "$repo/build/store" | wc -l)" "$before"
+
+echo "7. a recipe that names an architecture is refused"
 write_recipe "$sum" 'make = ["--host=x86_64-koompi-linux-gnu"]'
 out=$("$kb" build hello --target testtarget 2>&1 || true)
 contains "the lint fires before the build" "$out" "put it in the target file"

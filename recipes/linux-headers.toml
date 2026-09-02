@@ -1,5 +1,10 @@
 # The kernel's userspace API headers. glibc is compiled against these, so they
 # come before it and before any compiler that has a libc to link.
+#
+# ARCH and INSTALL_HDR_PATH are passed as make arguments, not exported. The
+# kernel's makefile assigns INSTALL_HDR_PATH with `=`, which overrides the
+# environment, so exporting it installs the headers into the scratch tree and
+# leaves the store entry empty -- with make exiting 0.
 name = "linux-headers"
 version = "6.18.49"
 kind = "target"
@@ -12,8 +17,4 @@ sha256 = "ae826f33111fea6f1d279dde7299d7463c8dfd204aeb75a8fb5432bc60a28191"
 system = "make"
 # No build step: headers_install does its own work.
 make = []
-install = ["headers_install"]
-
-[build.env]
-ARCH = "$KARCH"
-INSTALL_HDR_PATH = "$OUT/usr"
+install = ["headers_install", "ARCH=$KARCH", "INSTALL_HDR_PATH=$OUT/usr"]

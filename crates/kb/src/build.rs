@@ -150,6 +150,24 @@ impl Engine {
             );
         }
 
+        // A build that exits 0 and installs nothing is the worst kind of
+        // success: linux-headers did exactly this, because INSTALL_HDR_PATH
+        // was exported as an environment variable and the kernel's makefile
+        // assigns it with `=`, which overrides the environment. It took 13
+        // seconds and reported ok.
+        if !contains_a_file(&out)? {
+            self.store.discard(id);
+            bail!(
+                "{} {} installed nothing into $OUT\n  \
+                 a make variable set in [build.env] can be overridden by the makefile; \
+                 pass it in `make`/`install` instead, where the command line always wins\n  \
+                 script: {}",
+                recipe.name,
+                recipe.version,
+                script_path.display()
+            );
+        }
+
         self.store.finalize(
             id,
             &format!(
@@ -315,6 +333,22 @@ impl Engine {
             if ok { "ok" } else { "fail" }
         );
     }
+}
+
+/// Is there anything at all under `dir`? Empty directories do not count:
+/// `make install` can create a tree and populate none of it.
+fn contains_a_file(dir: &Path) -> Result<bool> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        // symlink_metadata: a dangling symlink is still something installed.
+        if !entry.file_type()?.is_dir() {
+            return Ok(true);
+        }
+        if contains_a_file(&entry.path())? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// `None` means the recipe said nothing, so run the usual thing.
