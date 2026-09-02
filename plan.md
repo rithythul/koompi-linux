@@ -151,6 +151,13 @@ The runtime set: `linux`, `dinit`, `bash`, `coreutils`, `util-linux`, plus what 
 
 **Exit:** `kb boot x86_64-cloud` reaches a shell prompt. `kb check-provenance` clean.
 
+Known before starting, from M1: gcc bakes a per-architecture dynamic-linker path into every binary — `/lib64/ld-linux-x86-64.so.2` on `x86_64`, `/lib/ld-linux-aarch64.so.1` on `aarch64` — while glibc installs the loader under `/usr/lib`.
+Overriding that in the gcc recipe would mean naming an architecture in a recipe, which criterion 3 forbids, so the image carries `/lib` and `/lib64` as symlinks to `usr/lib`.
+That needs a `filesystem` recipe with no upstream source, which the recipe format does not yet allow.
+
+The same fact makes one kind of test worthless: on an `x86_64` host, `/lib64/ld-linux-x86-64.so.2` is the *host's* loader, so a binary we cross-built will run there against the host's glibc and look fine.
+Only QEMU counts.
+
 ### M3 — the boot chain (D13–D17)
 
 UKI, `systemd-boot` built alone from the systemd tree, the ESP write protocol from the post-mortem — hidden staging name, fsync, byte-compare read-back, rename, fsync the directory, retain 3, never collect before a good boot.

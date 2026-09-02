@@ -35,6 +35,12 @@ cxx="$gccdir/bin/$triple-g++"
 readelf=$(ls "$gccdir"/../*binutils*/bin/"$triple"-readelf 2>/dev/null | head -1)
 [ -x "$readelf" ] || { echo "no $triple-readelf in the store" >&2; exit 1; }
 
+# gcc's driver finds the cross assembler and linker on PATH, because binutils
+# has its own store entry rather than sharing gcc's prefix. The engine puts
+# every host-tool dependency on PATH inside the container; this reproduces
+# that, and without it the driver fails with "cannot find 'ld'".
+export PATH="$(dirname "$readelf"):$PATH"
+
 work=$(mktemp -d "${TMPDIR:-/tmp}/kb-toolchain.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 
@@ -78,9 +84,17 @@ if [ -f "$work/hello" ]; then
     check "the output is for the target architecture" \
         "$("$readelf" -h "$work/hello" | awk -F: '/Machine:/ { sub(/^ +/, "", $2); print $2 }')" \
         "$want_machine"
-    check "it asks for our dynamic linker, not the host's" \
-        "$("$readelf" -l "$work/hello" | grep -o '/usr/lib/ld-linux[^]]*' | head -1 | grep -c '^/usr/lib/' || true)" \
-        "1"
+    # gcc bakes a per-architecture interpreter path -- /lib64/ld-linux-x86-64.so.2
+    # on x86_64, /lib/ld-linux-aarch64.so.1 on aarch64 -- while glibc installs
+    # the loader under /usr/lib. Overriding that in a recipe would mean naming
+    # an architecture in a recipe, which is exactly what criterion 3 forbids,
+    # so the image supplies /lib and /lib64 as symlinks to usr/lib instead.
+    # What the toolchain has to get right is the file name.
+    interp=$("$readelf" -l "$work/hello" |
+             sed -n 's/.*Requesting program interpreter: \(.*\)]/\1/p')
+    check "the interpreter it asks for is the one glibc installed" \
+        "$([ -f "$sysroot/usr/lib/$(basename "$interp")" ] && echo yes || echo "no: $interp")" \
+        "yes"
     check "it needs our libc" \
         "$("$readelf" -d "$work/hello" | grep -c 'Shared library: \[libc\.so\.6\]' || true)" \
         "1"
