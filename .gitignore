@@ -1,0 +1,7 @@
+# anchored to the repo root on purpose: an unanchored pattern matches at every
+# depth, which once swallowed src/sources/ and produced a commit that did not
+# build. see docs/POSTMORTEM.md
+/build/
+/out/
+/target/
+/.cache/
