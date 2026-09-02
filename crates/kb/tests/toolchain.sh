@@ -39,7 +39,12 @@ echo "  sysroot: $sysroot"
 echo
 
 # Mounts mirror crates/kb/src/build.rs. If those change, change these.
-podman run --rm --network=none \
+#
+# -i matters: without it podman does not attach stdin, `bash -s` reads an empty
+# script, and the container exits 0 having checked nothing. The grep for the
+# final marker below exists because that failure looked exactly like a pass.
+status=0
+output=$(podman run -i --rm --network=none \
     -v "$(dirname "$gccdir"):/kb/store:ro" \
     -v "$sysroot:/kb/sysroot:ro" \
     -e TRIPLE="$triple" \
@@ -107,5 +112,18 @@ if [ -f /tmp/hello ]; then
 fi
 
 echo
-if [ "$fails" -eq 0 ]; then echo "verified"; else echo "$fails check(s) failed"; exit 1; fi
+if [ "$fails" -eq 0 ]; then echo "ALL CHECKS PASSED"; else echo "$fails check(s) failed"; exit 1; fi
 INSIDE
+) || status=$?
+
+printf '%s\n' "$output"
+
+if [ "$status" -ne 0 ]; then
+    echo "toolchain.sh: $target FAILED"
+    exit 1
+fi
+if ! printf '%s' "$output" | grep -q "ALL CHECKS PASSED"; then
+    echo "toolchain.sh: the checks did not run; the container exited 0 without reaching the end"
+    exit 1
+fi
+echo "toolchain.sh: $target verified"

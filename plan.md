@@ -144,6 +144,15 @@ Correcting it here rather than quietly building five.
 **Exit:** `kb build gcc --target x86_64-cloud` and `--target aarch64-headless` are both green from an empty store, from one recipe set, with `kb lint` clean.
 Criterion 3 is proven at the toolchain, where it is hardest, on day five.
 
+**Done, D1.** Both toolchains build and pass `crates/kb/tests/toolchain.sh`, which runs inside the seed container and checks that the compiler knows its target, uses *our* assembler, links C and C++ against our glibc statically and dynamically, emits the right ELF machine, and asks for the loader glibc installed.
+
+Five recipes, two targets, zero forked recipes, `kb lint` clean.
+A full toolchain from an empty store is about 17 minutes per target on 8 cores: binutils 53s, gcc-bootstrap 323s, linux-headers 8s, glibc 134s, gcc 480s.
+
+Criterion 3 held, and the value of proving it here rather than at the image is that it did not hold at first.
+Three engine defects and one recipe defect only became visible on the second architecture, and one of them — gcc silently using the seed's assembler — was *wrong on x86_64 too* and produced a passing build.
+Had aarch64 come last, all four would have been found on top of a working image instead of a bare toolchain.
+
 ### M2 — the boot floor, direct kernel boot (D6–D12)
 
 The runtime set: `linux`, `dinit`, `bash`, `coreutils`, `util-linux`, plus what their closure drags in.
