@@ -1,9 +1,9 @@
 # Intent: KOOMPI Linux
 
 Stage 1 of the agent-native SDLC. This file is the *why* and the *what*.
-No design decisions belong here — those go in `spec.md`, and that document does not exist yet.
+No design decisions belong here — those go in [spec.md](spec.md).
 
-Status: **Plan.** Next artifact is `spec.md`, produced in one session.
+Status: **Build.** [spec.md](spec.md) settled the design; [plan.md](plan.md) sequences the work to Gate 0.
 
 ## What this is
 
