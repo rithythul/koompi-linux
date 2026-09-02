@@ -29,6 +29,26 @@ pub const C_WORK: &str = "/kb/work";
 pub const C_SOURCES: &str = "/kb/sources";
 pub const C_SYSROOT: &str = "/kb/sysroot";
 
+/// Delete a tree that a build left behind.
+///
+/// `fs::remove_dir_all` cannot unlink a file out of a directory it may not
+/// write to, and gcc's tarball ships several: `libffi`, `libphobos` and
+/// `.forgejo` all unpack read-only. The engine used to ignore the error and
+/// silently accumulate a two-gigabyte work tree per build.
+pub fn remove_tree(dir: &Path) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    // Best effort: if chmod is unavailable the remove below reports the real
+    // problem, and there is nothing useful to say about chmod itself.
+    let _ = std::process::Command::new("chmod")
+        .arg("-R")
+        .arg("u+rwX")
+        .arg(dir)
+        .status();
+    fs::remove_dir_all(dir).map_err(|e| Error::new(format!("removing {}: {e}", dir.display())))
+}
+
 pub struct Store {
     pub root: PathBuf,
 }
@@ -52,10 +72,7 @@ impl Store {
     /// wreckage of an interrupted one.
     pub fn prepare(&self, id: &str) -> Result<PathBuf> {
         let dir = self.path(id);
-        if dir.exists() {
-            fs::remove_dir_all(&dir)
-                .map_err(|e| Error::new(format!("removing partial {}: {e}", dir.display())))?;
-        }
+        remove_tree(&dir)?;
         fs::create_dir_all(&dir)?;
         Ok(dir)
     }
@@ -65,8 +82,12 @@ impl Store {
         Ok(())
     }
 
+    /// Throw away a failed build. The caller is already reporting a failure,
+    /// so a cleanup problem is worth a word but must not replace it.
     pub fn discard(&self, id: &str) {
-        let _ = fs::remove_dir_all(self.path(id));
+        if let Err(e) = remove_tree(&self.path(id)) {
+            eprintln!("kb: could not clean up after a failed build: {e}");
+        }
     }
 }
 
@@ -117,9 +138,7 @@ pub fn sysroot(build_dir: &Path, store: &Store, dep_ids: &[(&str, Kind, String)]
     if dir.join(MARKER).is_file() {
         return Ok(dir);
     }
-    if dir.exists() {
-        fs::remove_dir_all(&dir)?;
-    }
+    remove_tree(&dir)?;
     fs::create_dir_all(&dir)?;
 
     for id in &targets {

@@ -97,9 +97,7 @@ impl Engine {
         let tarball = self.fetch(recipe)?;
 
         let work = self.build_dir.join("work").join(id);
-        if work.exists() {
-            fs::remove_dir_all(&work)?;
-        }
+        store::remove_tree(&work)?;
         fs::create_dir_all(&work)?;
         let out = self.store.prepare(id)?;
 
@@ -175,7 +173,7 @@ impl Engine {
                 recipe.name, recipe.version, target.name
             ),
         )?;
-        let _ = fs::remove_dir_all(&work);
+        store::remove_tree(&work)?;
         println!("  ok  {} {} in {secs}s", recipe.name, recipe.version);
         Ok(())
     }
@@ -292,7 +290,12 @@ pub fn script(
         }
 
         s.push_str(&format!(
-            "\nmkdir -p {work}/src\ntar -xf {src}/{tarball} -C {work}/src --strip-components={strip}\nexport SRC={work}/src\n\n",
+            // --no-same-owner: tar runs as root in the container and would
+            // otherwise restore the uids recorded in the tarball. gcc's ships
+            // uid 1000, which maps into the host's subuid range, and the
+            // result is a scratch tree the invoking user cannot delete. That
+            // is the post-mortem's uid-100997 trap wearing a different hat.
+            "\nmkdir -p {work}/src\ntar -xf {src}/{tarball} -C {work}/src --no-same-owner --strip-components={strip}\nexport SRC={work}/src\n\n",
             work = store::C_WORK,
             src = store::C_SOURCES,
             strip = recipe.source.strip,
@@ -440,7 +443,7 @@ mod tests {
         assert!(s.contains("export JOBS=4"), "{s}");
         // Recipe env comes after the engine's, so it can refer to it.
         assert!(s.find("export KARCH").unwrap() < s.find("export ARCH=\"$KARCH\"").unwrap());
-        assert!(s.contains("tar -xf /kb/sources/pkg-1.0.tar.xz -C /kb/work/src --strip-components=1"), "{s}");
+        assert!(s.contains("tar -xf /kb/sources/pkg-1.0.tar.xz -C /kb/work/src --no-same-owner --strip-components=1"), "{s}");
     }
 
     #[test]

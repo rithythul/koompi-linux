@@ -90,6 +90,11 @@ check "the marker is written last" "$([ -f "$entry/.kb-ok" ] && echo yes)" "yes"
 check "the install ran" "$(cat "$entry/usr/bin/hello")" "built for x86_64-koompi-linux-gnu"
 check "the work dir is cleaned up on success" "$(ls "$repo/build/work" 2>/dev/null | wc -l)" "0"
 contains "the build is recorded" "$(cat "$repo/build/builds.tsv")" "hello	1.0	testtarget"
+# tar runs as root in the container. Without --no-same-owner it restores the
+# uids in the tarball, which land in the host's subuid range and leave a tree
+# the invoking user cannot delete.
+check "nothing is left owned by a mapped uid" \
+    "$(find "$repo/build" -not -user "$(id -u)" | wc -l)" "0"
 
 echo "2. building again uses the store"
 out=$("$kb" build hello --target testtarget 2>&1)
