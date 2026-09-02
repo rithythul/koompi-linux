@@ -14,6 +14,12 @@ configure = [
   "--prefix=$OUT",
   "--target=$TRIPLE",
   "--with-sysroot=$SYSROOT",
+  # gcc's driver looks for an unprefixed `as` and `ld`, and the seed has both
+  # on PATH. On $ARCH matching the host that silently works and the seed's
+  # binutils quietly assembles everything; on a different architecture it fails
+  # with `as: unrecognized option`. binutils installs unprefixed tools under
+  # $prefix/$TRIPLE/bin, which is exactly what this option wants.
+  "--with-build-time-tools=$KB_BINUTILS/$TRIPLE/bin",
   "--enable-languages=c,c++",
   "--enable-shared",
   "--enable-threads=posix",

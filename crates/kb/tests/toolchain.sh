@@ -61,6 +61,14 @@ echo
 
 check "the compiler knows its own target" "$("$cc" -dumpmachine)" "$triple"
 
+# The one that hid: gcc looks for an unprefixed `as` and falls back to PATH,
+# where the seed has its own. When the seed's architecture matches the target
+# it works, and everything is quietly assembled by the seed's binutils.
+as_used=$("$cc" -print-prog-name=as)
+check "the assembler is ours, not the seed's" \
+    "$(case "$as_used" in "$(dirname "$gccdir")"/*) echo yes ;; *) echo "no: $as_used" ;; esac)" \
+    "yes"
+
 cat > "$work/hello.c" <<'C'
 #include <stdio.h>
 int main(void) { printf("hello from %s\n", "koompi"); return 0; }

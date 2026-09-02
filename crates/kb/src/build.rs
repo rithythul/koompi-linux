@@ -293,6 +293,18 @@ pub fn script(
             s.push_str(&format!("export PATH=\"{}:$PATH\"\n", path_extra.join(":")));
         }
 
+        // Where each direct dependency landed, so a recipe can point at one
+        // by name instead of guessing. gcc needs this: it has to be told
+        // where its assembler is, and the answer is a store path.
+        //
+        // Direct dependencies only. A recipe that reaches for something it
+        // did not declare has a dependency it is not admitting to.
+        let direct: Vec<&str> = recipe.all_deps().collect();
+        for (name, _, id) in dep_ids.iter().filter(|(n, _, _)| direct.contains(n)) {
+            let var = name.to_uppercase().replace('-', "_");
+            s.push_str(&format!("export KB_{var}={}/{id}\n", store::C_STORE));
+        }
+
         // The seed's own gcc, g++ and ar are on PATH, because the seed is
         // where make, perl and sed come from. Nothing stops a target build
         // from picking them up: glibc's configure found the host g++, decided
@@ -515,6 +527,22 @@ mod tests {
         let s = render(&recipe(System::Configure, None, None), &deps);
         assert!(s.contains("export PATH=\"/kb/store/aaa-binutils-2.47/bin:$PATH\""), "{s}");
         assert!(!s.contains("bbb-glibc-2.44"), "a sysroot package reached PATH:\n{s}");
+    }
+
+    #[test]
+    fn direct_dependencies_get_a_path_variable() {
+        let mut r = recipe(System::Configure, None, None);
+        r.deps.build = vec!["binutils".into(), "gcc-bootstrap".into()];
+        let deps = [
+            ("binutils", Kind::HostTool, "aaa-binutils-2.47".to_string()),
+            ("gcc-bootstrap", Kind::HostTool, "bbb-gcc-bootstrap-15.3.0".to_string()),
+            // In the closure but not declared by this recipe.
+            ("glibc", Kind::Target, "ccc-glibc-2.44".to_string()),
+        ];
+        let s = render(&r, &deps);
+        assert!(s.contains("export KB_BINUTILS=/kb/store/aaa-binutils-2.47"), "{s}");
+        assert!(s.contains("export KB_GCC_BOOTSTRAP=/kb/store/bbb-gcc-bootstrap-15.3.0"), "{s}");
+        assert!(!s.contains("KB_GLIBC="), "an undeclared dependency was offered:\n{s}");
     }
 
     #[test]
