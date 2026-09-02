@@ -23,6 +23,7 @@ kb — the KOOMPI Linux build engine
   kb lint                              check every recipe against every target
   kb targets                           list the declared targets
   kb build <recipe> --target <name>    build a recipe and everything under it
+  kb sysroot <recipe> --target <name>  print the sysroot that recipe builds against
 
 options
   --target <name>   required by build
@@ -78,6 +79,20 @@ fn run() -> Result<()> {
             let engine = build::Engine::new(&root, opts.jobs)?;
             let id = engine.build(&recipes, name, &target)?;
             println!("{}", engine.store.path(&id).display());
+            Ok(())
+        }
+        "sysroot" => {
+            let opts = Options::parse(&args[1..])?;
+            let Some(name) = opts.positional.first() else {
+                bail!("sysroot needs a recipe name\n\n{USAGE}")
+            };
+            let Some(target_name) = &opts.target else {
+                bail!("sysroot needs --target\n\n{USAGE}")
+            };
+            let recipes = recipe::load_all(&recipes_dir)?;
+            let target = target::Target::load(&targets_dir, target_name)?;
+            let engine = build::Engine::new(&root, opts.jobs)?;
+            println!("{}", engine.sysroot_of(&recipes, name, &target)?.display());
             Ok(())
         }
         "-h" | "--help" | "help" => {

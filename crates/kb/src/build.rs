@@ -61,11 +61,7 @@ impl Engine {
 
         for name in &order {
             let recipe = &recipes[name];
-            let deps: BTreeMap<String, String> = recipe
-                .all_deps()
-                .map(|d| (d.to_string(), ids[d].clone()))
-                .collect();
-            let id = store::build_id(recipe, target, &deps);
+            let id = id_of(recipe, target, &ids);
             if !self.store.is_built(&id) {
                 self.build_one(recipes, recipe, target, &id, &ids)?;
             } else {
@@ -74,6 +70,35 @@ impl Engine {
             ids.insert(name.clone(), id);
         }
         Ok(ids[root_name].clone())
+    }
+
+    /// The sysroot a recipe would be built against, for looking at rather
+    /// than building with. Everything it needs must already be built: this
+    /// answers "where is it", not "make it".
+    pub fn sysroot_of(
+        &self,
+        recipes: &BTreeMap<String, Recipe>,
+        root_name: &str,
+        target: &Target,
+    ) -> Result<PathBuf> {
+        let order = crate::graph::order(recipes, root_name)?;
+        let mut ids: BTreeMap<String, String> = BTreeMap::new();
+        for name in &order {
+            let id = id_of(&recipes[name], target, &ids);
+            if !self.store.is_built(&id) {
+                bail!(
+                    "{name} is not built for {t}\n  run: kb build {root_name} --target {t}",
+                    t = target.name
+                );
+            }
+            ids.insert(name.clone(), id);
+        }
+        let dep_ids: Vec<(&str, Kind, String)> = order
+            .iter()
+            .filter(|n| *n != root_name)
+            .map(|n| (n.as_str(), recipes[n].kind, ids[n].clone()))
+            .collect();
+        store::sysroot(&self.build_dir, &self.store, &dep_ids)
     }
 
     fn build_one(
@@ -87,6 +112,8 @@ impl Engine {
         // Everything this recipe transitively needs, with its kind, so
         // host tools go on PATH and target packages go in the sysroot.
         let closure = crate::graph::order(recipes, &recipe.name)?;
+        // Every name in the closure was ordered before this one, so its id is
+        // already known; that is the invariant graph::order exists to provide.
         let dep_ids: Vec<(&str, Kind, String)> = closure
             .iter()
             .filter(|n| *n != &recipe.name)
@@ -376,6 +403,16 @@ fn contains_a_file(dir: &Path) -> Result<bool> {
 
 /// `None` means the recipe said nothing, so run the usual thing.
 /// `Some([])` means the recipe said "not this step", so run nothing.
+/// A recipe's build id, given the ids of everything it depends on.
+/// Both the builder and `sysroot_of` go through here, so they cannot drift.
+fn id_of(recipe: &Recipe, target: &Target, ids: &BTreeMap<String, String>) -> String {
+    let deps: BTreeMap<String, String> = recipe
+        .all_deps()
+        .map(|d| (d.to_string(), ids[d].clone()))
+        .collect();
+    store::build_id(recipe, target, &deps)
+}
+
 fn make_step(prefix: &str, args: &Option<Vec<String>>, fallback: &[String]) -> String {
     let args = match args {
         None => fallback,
