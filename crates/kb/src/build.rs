@@ -173,6 +173,8 @@ impl Engine {
         let script = script(self.jobs, recipe, target, id, &dep_ids, tarball.as_deref());
         let script_path = work.join("build.sh");
         fs::write(&script_path, &script)?;
+        let kernel_config = work.join("kernel.config");
+        fs::write(&kernel_config, &target.kernel_config)?;
 
         println!("build {} {} for {}", recipe.name, recipe.version, target.name);
         let started = Instant::now();
@@ -189,11 +191,7 @@ impl Engine {
             .arg("-v")
             .arg(format!("{}:{}:ro", sysroot.display(), store::C_SYSROOT))
             .arg("-v")
-            .arg(format!(
-                "{}:{}:ro",
-                self.root.join(&target.kernel_config).display(),
-                C_KERNEL_CONFIG
-            ))
+            .arg(format!("{}:{}:ro", kernel_config.display(), C_KERNEL_CONFIG))
             .arg("-w")
             .arg(store::C_WORK)
             .arg(&self.seed)

@@ -1,5 +1,6 @@
-# The kernel. `defconfig` plus the target's fragment: the defaults are
-# upstream's problem, and what we decided is one readable file per target.
+# The kernel. `defconfig` plus the target's fragments, merged by the engine
+# in the order the target lists them: the defaults are upstream's problem,
+# and what we decided is a few readable files under config/kernel/.
 name = "linux"
 version = "6.18.49"
 kind = "target"
@@ -19,8 +20,8 @@ kmake defconfig
 scripts/kconfig/merge_config.sh -m .config "$KERNEL_CONFIG"
 kmake olddefconfig
 
-# every fragment line has to survive olddefconfig, or the image is not the
-# one the target asked for
+# every merged fragment line has to survive olddefconfig, or the kernel is
+# not the one the target asked for
 while read -r line; do
     case "$line" in ''|'#'*) continue ;; esac
     grep -qx "$line" .config || { echo "kernel config lost: $line"; exit 1; }

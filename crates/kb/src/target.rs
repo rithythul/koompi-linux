@@ -27,8 +27,11 @@ pub struct Target {
     pub arch: String,
     /// The processor family, as kbuild spells it. Not always the same.
     pub kernel_arch: String,
-    /// repo-relative fragment merged over `make defconfig`
-    pub kernel_config: PathBuf,
+    /// DESIGN.md C4: fragment names under config/kernel/, merged in order
+    /// over `make defconfig`; a later fragment overrides an earlier line
+    pub kernel_fragments: Vec<String>,
+    /// the merged fragments, what the linux recipe reads as $KERNEL_CONFIG
+    pub kernel_config: String,
     /// what an image is assembled from, before runtime dependencies
     pub contents: Vec<String>,
     /// DESIGN.md C5: hardening is policy, and policy that names an
@@ -59,7 +62,7 @@ impl Target {
         let triple = r.str_req("triple")?.to_string();
         let arch = r.str_req("arch")?.to_string();
         let kernel_arch = r.str_req("kernel_arch")?.to_string();
-        let kernel_config = PathBuf::from(r.str_req("kernel_config")?);
+        let kernel_fragments = r.strs("kernel_config")?;
         let contents = r.strs("contents")?;
         let cflags = r.strs("cflags")?;
         let ldflags = r.strs("ldflags")?;
@@ -79,26 +82,35 @@ impl Target {
         if name_field != name {
             bail!("{origin}: name is `{name_field}` but the file is `{name}.toml`");
         }
-        if kernel_config.is_absolute() {
-            bail!("{origin}: kernel_config must be relative to the repository");
+        if kernel_fragments.is_empty() {
+            bail!("{origin}: kernel_config must list at least one fragment from config/kernel/");
         }
-        let config_path = root.join(&kernel_config);
-        let config = fs::read(&config_path).map_err(|e| {
-            crate::err::Error::new(format!("{origin}: kernel_config {}: {e}", config_path.display()))
-        })?;
+        let mut fragments = Vec::new();
+        for name in &kernel_fragments {
+            if !is_fragment_name(name) {
+                bail!("{origin}: kernel_config `{name}` is not a fragment name (a-z, 0-9, - and _)");
+            }
+            let path = fragment_path(root, name);
+            let text = fs::read_to_string(&path).map_err(|e| {
+                crate::err::Error::new(format!("{origin}: kernel_config `{name}`: {}: {e}", path.display()))
+            })?;
+            fragments.push((name.as_str(), text));
+        }
+        let kernel_config = merge_fragments(&fragments).map_err(|e| e.ctx(origin.clone()))?;
 
         Ok(Target {
             name: name_field,
             triple,
             arch,
             kernel_arch,
+            kernel_fragments,
+            kernel_config_digest: crate::sha256::digest(kernel_config.as_bytes()),
             kernel_config,
             contents,
             cflags,
             ldflags,
             setuid,
             boot,
-            kernel_config_digest: crate::sha256::digest(&config),
         })
     }
 
@@ -126,6 +138,63 @@ impl Target {
     }
 }
 
+pub fn fragment_path(root: &Path, name: &str) -> PathBuf {
+    root.join("config/kernel").join(format!("{name}.config"))
+}
+
+fn is_fragment_name(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+/// The symbol a kernel config line sets, or None for a blank or comment
+/// line. A line that is neither is not a kernel config line.
+fn config_symbol(line: &str) -> Result<Option<&str>> {
+    if line.is_empty() {
+        return Ok(None);
+    }
+    if let Some(rest) = line.strip_prefix("# ") {
+        if let Some(sym) = rest.strip_suffix(" is not set")
+            && sym.starts_with("CONFIG_")
+        {
+            return Ok(Some(sym));
+        }
+        return Ok(None);
+    }
+    if line == "#" {
+        return Ok(None);
+    }
+    if let Some((sym, _)) = line.split_once('=')
+        && sym.starts_with("CONFIG_")
+    {
+        return Ok(Some(sym));
+    }
+    bail!("`{line}` is not a kernel config line")
+}
+
+/// Fragments in order, later overriding earlier by symbol. The result is
+/// exactly the set of lines the linux recipe demands survive olddefconfig,
+/// so an override does not read as a loss. Comments do not carry over:
+/// the fragments are the readable thing, this is the mounted thing.
+pub fn merge_fragments(fragments: &[(&str, String)]) -> Result<String> {
+    let mut lines: Vec<(String, String)> = Vec::new();
+    for (name, text) in fragments {
+        for (n, raw) in text.lines().enumerate() {
+            let line = raw.trim_end();
+            let Some(sym) = config_symbol(line).map_err(|e| e.ctx(format!("config/kernel/{name}.config:{}", n + 1)))? else {
+                continue;
+            };
+            lines.retain(|(s, _)| s != sym);
+            lines.push((sym.to_string(), line.to_string()));
+        }
+    }
+    let mut out = String::new();
+    for (_, line) in lines {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 impl Target {
     pub fn for_test(name: &str, triple: &str, arch: &str, kernel_arch: &str) -> Target {
@@ -134,7 +203,8 @@ impl Target {
             triple: triple.into(),
             arch: arch.into(),
             kernel_arch: kernel_arch.into(),
-            kernel_config: PathBuf::from("config/kernel/test.config"),
+            kernel_fragments: vec!["test".into()],
+            kernel_config: "CONFIG_TEST=y\n".into(),
             contents: Vec::new(),
             cflags: vec!["-D_FORTIFY_SOURCE=3".into()],
             ldflags: vec!["-Wl,-z,relro,-z,now".into()],
@@ -165,4 +235,35 @@ pub fn load_all(root: &Path) -> Result<Vec<Target>> {
         .iter()
         .map(|n| Target::load(root, n))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_later_fragment_overrides_an_earlier_line_by_symbol() {
+        let merged = merge_fragments(&[
+            ("core", "# what every kernel is\nCONFIG_A=y\n# CONFIG_B is not set\nCONFIG_C=\"x\"\n".into()),
+            ("target", "\nCONFIG_B=m\nCONFIG_D=y\n".into()),
+        ])
+        .unwrap();
+        assert_eq!(merged, "CONFIG_A=y\nCONFIG_C=\"x\"\nCONFIG_B=m\nCONFIG_D=y\n");
+    }
+
+    #[test]
+    fn a_line_that_is_not_a_kernel_config_line_is_refused() {
+        let err = merge_fragments(&[("core", "CONFIG_A=y\nCONFIG_B\n".into())]).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("config/kernel/core.config:2"), "{msg}");
+        assert!(msg.contains("`CONFIG_B` is not a kernel config line"), "{msg}");
+    }
+
+    #[test]
+    fn fragment_names_are_plain() {
+        assert!(is_fragment_name("x86_64-cloud"));
+        assert!(!is_fragment_name("../core"));
+        assert!(!is_fragment_name(""));
+        assert!(!is_fragment_name("Core"));
+    }
 }

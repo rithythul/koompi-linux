@@ -13,7 +13,9 @@
 use crate::err::{Result, bail};
 use crate::recipe::Recipe;
 use crate::target::Target;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::Path;
 
 fn is_token_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '+')
@@ -42,8 +44,24 @@ pub fn architecture_literals(recipe: &Recipe, targets: &[Target]) -> Vec<String>
     hits
 }
 
-pub fn run(recipes: &BTreeMap<String, Recipe>, targets: &[Target]) -> Result<()> {
+pub fn run(root: &Path, recipes: &BTreeMap<String, Recipe>, targets: &[Target]) -> Result<()> {
     let mut problems = Vec::new();
+
+    // A fragment no target lists is a decision nobody is making.
+    let listed: BTreeSet<&str> = targets.iter().flat_map(|t| t.kernel_fragments.iter().map(String::as_str)).collect();
+    let dir = root.join("config/kernel");
+    let mut on_disk: Vec<String> = fs::read_dir(&dir)
+        .map_err(|e| crate::err::Error::new(format!("{}: {e}", dir.display())))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "config"))
+        .filter_map(|p| p.file_stem().and_then(|s| s.to_str()).map(str::to_string))
+        .collect();
+    on_disk.sort();
+    for name in &on_disk {
+        if !listed.contains(name.as_str()) {
+            problems.push(format!("config/kernel/{name}.config: no target lists it in kernel_config"));
+        }
+    }
 
     for recipe in recipes.values() {
         problems.extend(architecture_literals(recipe, targets));

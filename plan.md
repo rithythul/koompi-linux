@@ -224,18 +224,29 @@ And the M1 pattern again: dinit compiles a build-machine helper with the seed's 
 
 ### M3 — the boot chain (D13–D17)
 
-UKI, `systemd-boot` built alone from the systemd tree, the ESP write protocol from the post-mortem — hidden staging name, fsync, byte-compare read-back, rename, fsync the directory, retain 3, never collect before a good boot.
-`bless-boot` as a dinit oneshot.
+Five steps, in the order that de-risks the verity root first and the boot manager last.
+One commit per step, each verified from `git archive`, both targets built at every step; `aarch64` boots when its QEMU is installed, and until then its image and provenance still count.
 
-This is also where the root stops being an initramfs and becomes the production shape from DESIGN.md:
+1. **Kernel fragments (C4).** `config/kernel/` becomes `core`, `hardening`, `virt` and one fragment per target; the target file lists them and the engine merges them in order, later overriding earlier by symbol.
+   `core` adds dm-init, dm-verity, erofs, overlayfs, the cgroup v2 set, every namespace, seccomp filters, Landlock, lockdown and module signing with a build-time key; `hardening` is C4's list.
+   Gate: the M2 initramfs smoke boot still passes on `x86_64`; nothing else changes.
+2. **Root image (C3, C2).** The seed gains `erofs-utils` and `cryptsetup`; `e2fsprogs` is the fourteenth recipe.
+   `kb image` gains a disk mode: GPT with an ESP, one root slot of erofs (`mkfs.erofs -T <epoch>`, sorted, fixed UUID) with the verity hash tree appended by `veritysetup format --hash-offset` under a fixed salt and UUID, so the root hash reproduces, and an empty ext4 partition labelled `state`.
+   The root hash goes in the image manifest.
+   Gate: `veritysetup verify` on the written slot, in the seed.
+3. **Kernel-opened root, no initramfs (C2).** `kb boot --disk` boots with `-kernel` plus the disk and the `dm-mod.create=` command line the UKI will later bake.
+   `early-fs` mounts `PARTLABEL=state` on `/var`, overlays `/etc` from the image's `/etc` with upper and work under `/var/lib/koompi/etc`, and tmpfs on `/run` and `/tmp`.
+   `/init` and the initramfs path leave `boot-services`; the selftest checks that `/` is read-only erofs on `dm-0` and `/etc` is an overlay.
+   Gate: smoke boot on `x86_64` through the verity root.
+4. **meson in the engine, then systemd-boot.** `system = "meson"` with a generated cross file, because systemd-boot is the first of roughly a hundred meson packages in the desktop layer and the shell escape is the wrong place for it.
+   The seed gains `python3-pyelftools` and `sbsigntool`.
+   The `systemd-boot` recipe builds the systemd tree with `-Dbootloader=true` and everything else off, and installs only the EFI binary.
+   `kb` assembles the UKI with `objcopy` against the tree's stub (`.osrel`, `.cmdline`, `.linux`, no `.initrd`) and signs it with a build-time key.
+   The ESP carries `EFI/BOOT/BOOT<arch>.EFI`, the name from the target file, and `EFI/Linux/koompi-<version>+3.efi`, written with `mtools` under the post-mortem protocol; `bless` is a dinit oneshot that renames `+N-M` to plain after the selftest passes, with the ESP read-write only for the rename.
+5. **`kb boot --efi`.** OVMF from a host path in the target file, booting the disk image.
 
-- **C3**: `kb image` writes the root as erofs with a fixed timestamp, and `veritysetup` produces the hash tree; both tools are added to the seed, with `sbsign` for the UKI
-- **C2**: the UKI's command line carries `dm-mod.create=` with the root hash, and the kernel opens the verity root itself; no initramfs, no `/init` before dinit
-- **C4**: `config/kernel/` becomes `core`, `hardening`, `virt` and per-target fragments, listed in the target file and merged in order; the "every line survives `olddefconfig`" check runs over all of them
-- **C1**: `early-fs` mounts the `/etc` overlay and the `/var` partition; the state partition is created on first boot
-
-**Exit:** `x86_64-cloud` boots under OVMF from the ESP into a verity root, and an entry rigged to fail rolls back unattended across three tries.
-Rollback is on the [cut list](#cut-list); UEFI boot and the verity root are not.
+**Exit:** `kb boot x86_64-cloud --efi --smoke` passes: UEFI, systemd-boot, a signed UKI, a verity root the kernel opened itself.
+The rigged-fail rollback stays on the [cut list](#cut-list).
 
 ### M4 — `aarch64` headless (D18–D20)
 

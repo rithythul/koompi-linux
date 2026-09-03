@@ -63,7 +63,7 @@ name = "testtarget"
 triple = "x86_64-koompi-linux-gnu"
 arch = "x86_64"
 kernel_arch = "x86"
-kernel_config = "config/kernel/testtarget.config"
+kernel_config = ["testtarget"]
 contents = ["hello"]
 
 [boot]

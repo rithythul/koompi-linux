@@ -61,7 +61,7 @@ fn run() -> Result<()> {
         "lint" => {
             let recipes = recipe::load_all(&recipes_dir)?;
             let targets = target::load_all(&root)?;
-            lint::run(&recipes, &targets)
+            lint::run(&root, &recipes, &targets)
         }
         "targets" => {
             for t in target::load_all(&root)? {
@@ -81,7 +81,7 @@ fn run() -> Result<()> {
             let recipes = recipe::load_all(&recipes_dir)?;
             let targets = target::load_all(&root)?;
             // a recipe that names an architecture builds fine and breaks the gate silently
-            lint::run(&recipes, &targets)?;
+            lint::run(&root, &recipes, &targets)?;
 
             let target = target::Target::load(&root, target_name)?;
             let engine = build::Engine::new(&root, opts.jobs)?;
@@ -110,7 +110,7 @@ fn run() -> Result<()> {
             };
             let recipes = recipe::load_all(&recipes_dir)?;
             let targets = target::load_all(&root)?;
-            lint::run(&recipes, &targets)?;
+            lint::run(&root, &recipes, &targets)?;
             let target = target::Target::load(&root, target_name)?;
             let engine = build::Engine::new(&root, opts.jobs)?;
             let image = image::assemble(&engine, &recipes, &target)?;

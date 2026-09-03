@@ -3,7 +3,8 @@ name = "x86_64-cloud"
 triple = "x86_64-koompi-linux-gnu"
 arch = "x86_64"
 kernel_arch = "x86"
-kernel_config = "config/kernel/x86_64-cloud.config"
+# DESIGN.md C4: config/kernel/ fragments, merged in this order
+kernel_config = ["core", "hardening", "virt", "x86_64-cloud"]
 contents = ["boot-services", "linux"]
 
 # DESIGN.md C5: hardening is policy, and policy that names an architecture
