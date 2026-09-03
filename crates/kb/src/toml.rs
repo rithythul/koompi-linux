@@ -1,9 +1,13 @@
 //! A strict TOML subset.
 //!
 //! This parser is deliberately narrow. It accepts tables, dotted table
-//! headers, bare keys, basic strings, integers, booleans and arrays, and it
-//! rejects everything else by name: inline tables, arrays of tables, literal
-//! strings, multi-line strings, floats and dates.
+//! headers, bare keys, basic strings, multi-line basic strings, integers,
+//! booleans and arrays, and it rejects everything else by name: inline
+//! tables, arrays of tables, literal strings, floats and dates.
+//!
+//! A multi-line string is taken literally, escapes and all: it holds the
+//! shell escape hatch from spec.md decision 2, and a script is not text that
+//! survives being unescaped.
 //!
 //! The narrowness is the point. spec.md's constraint is that a person can read
 //! the whole core in a day, and a recipe written in a feature of TOML nobody
@@ -237,11 +241,32 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn basic_string(&mut self) -> Result<String> {
-        self.bump(); // opening quote
-        if self.peek() == Some(b'"') && self.s.get(self.i + 1) == Some(&b'"') {
-            return self.fail("multi-line strings are not in the subset");
+    /// `"""..."""`, taken literally: no escape processing, because what goes
+    /// in one is a shell script and `printf '%s\n'` has to survive the trip.
+    fn multi_line_string(&mut self) -> Result<String> {
+        self.i += 3;
+        if self.peek() == Some(b'\n') {
+            self.bump();
         }
+        let start = self.i;
+        while self.i < self.s.len() {
+            if self.s[self.i..].starts_with(b"\"\"\"") {
+                let text = std::str::from_utf8(&self.s[start..self.i])
+                    .map_err(|_| Error::new(format!("line {}: invalid UTF-8 in string", self.line)))?
+                    .to_string();
+                self.i += 3;
+                return Ok(text);
+            }
+            self.bump();
+        }
+        self.fail("unterminated multi-line string")
+    }
+
+    fn basic_string(&mut self) -> Result<String> {
+        if self.s[self.i..].starts_with(b"\"\"\"") {
+            return self.multi_line_string();
+        }
+        self.bump(); // opening quote
         let mut out = String::new();
         loop {
             match self.bump() {
@@ -421,13 +446,28 @@ b = "ស្រុកខ្មែរ"
         assert_eq!(d["b"], Value::Str("ស្រុកខ្មែរ".into()));
     }
 
+    #[test]
+    fn multi_line_strings_are_literal() {
+        let d = t("script = \"\"\"\nprintf '%s\\n' \"$OUT\"\nmkdir -p a/b\n\"\"\"\nk = 1\n");
+        assert_eq!(
+            d["script"],
+            Value::Str("printf '%s\\n' \"$OUT\"\nmkdir -p a/b\n".into())
+        );
+        // and the parser carries on afterwards
+        assert_eq!(d["k"], Value::Int(1));
+    }
+
+    #[test]
+    fn an_unterminated_multi_line_string_is_caught() {
+        rejects("x = \"\"\"\nabc\n", "unterminated multi-line string");
+    }
+
     // The rejections are the feature, so each one is tested by its message.
     #[test]
     fn rejects_what_is_not_in_the_subset() {
         rejects("x = {a = 1}\n", "inline tables");
         rejects("[[x]]\n", "arrays of tables");
         rejects("x = 'a'\n", "literal strings");
-        rejects("x = \"\"\"a\"\"\"\n", "multi-line strings");
         rejects("x = 1.5\n", "floats");
         rejects("\"x\" = 1\n", "quoted keys");
         rejects(r#"x = "\a""#, "escape \\a is not in the subset");

@@ -10,7 +10,7 @@
 //! already had one.
 
 use crate::err::{Error, Result, bail};
-use crate::recipe::{Kind, Recipe, System};
+use crate::recipe::{Kind, Recipe, Source, System};
 use crate::store::{self, Store};
 use crate::target::Target;
 use std::collections::BTreeMap;
@@ -18,6 +18,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+/// The target's kernel config fragment, mounted read-only into every build.
+pub const C_KERNEL_CONFIG: &str = "/kb/kernel.config";
+const KERNEL_CONFIG_VAR_NAME: &str = "KERNEL_CONFIG";
+/// How a recipe spells it, and how the engine knows the recipe read it.
+pub const KERNEL_CONFIG_VAR: &str = "$KERNEL_CONFIG";
 
 pub struct Engine {
     pub root: PathBuf,
@@ -56,20 +62,49 @@ impl Engine {
         root_name: &str,
         target: &Target,
     ) -> Result<String> {
-        let order = crate::graph::order(recipes, root_name)?;
-        let mut ids: BTreeMap<String, String> = BTreeMap::new();
-
-        for name in &order {
-            let recipe = &recipes[name];
-            let id = id_of(recipe, target, &ids);
-            if !self.store.is_built(&id) {
-                self.build_one(recipes, recipe, target, &id, &ids)?;
-            } else {
-                println!("  ok  {name} {} (cached)", recipe.version);
-            }
-            ids.insert(name.clone(), id);
-        }
+        let ids = self.build_all(recipes, std::slice::from_ref(&root_name.to_string()), target)?;
         Ok(ids[root_name].clone())
+    }
+
+    /// Build every root and everything under them. Returns the id of every
+    /// recipe touched, which is what an image needs to know where things are.
+    pub fn build_all(
+        &self,
+        recipes: &BTreeMap<String, Recipe>,
+        roots: &[String],
+        target: &Target,
+    ) -> Result<BTreeMap<String, String>> {
+        let mut ids: BTreeMap<String, String> = BTreeMap::new();
+        for root in roots {
+            for name in &crate::graph::order(recipes, root)? {
+                if ids.contains_key(name) {
+                    continue;
+                }
+                let recipe = &recipes[name];
+                let id = id_of(recipe, target, &ids);
+                if !self.store.is_built(&id) {
+                    self.build_one(recipes, recipe, target, &id, &ids)?;
+                } else {
+                    println!("  ok  {name} {} (cached)", recipe.version);
+                }
+                ids.insert(name.clone(), id);
+            }
+        }
+        Ok(ids)
+    }
+
+    /// What the seed's own compiler calls the machine it runs on. Anything
+    /// carrying that string into an image was built for the seed, not for us.
+    pub fn seed_triple(&self) -> Result<String> {
+        let out = Command::new("podman")
+            .args(["run", "--rm", "--network=none", &self.seed, "gcc", "-dumpmachine"])
+            .output()
+            .map_err(|e| Error::new(format!("running podman: {e}")))?;
+        let triple = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !out.status.success() || triple.is_empty() {
+            bail!("the seed's gcc did not say what machine it targets");
+        }
+        Ok(triple)
     }
 
     /// The sysroot a recipe would be built against, for looking at rather
@@ -121,14 +156,17 @@ impl Engine {
             .collect();
 
         let sysroot = store::sysroot(&self.build_dir, &self.store, &dep_ids)?;
-        let tarball = self.fetch(recipe)?;
+        let tarball = match &recipe.source {
+            Some(source) => Some(self.fetch(recipe, source)?),
+            None => None,
+        };
 
         let work = self.build_dir.join("work").join(id);
         store::remove_tree(&work)?;
         fs::create_dir_all(&work)?;
         let out = self.store.prepare(id)?;
 
-        let script = script(self.jobs, recipe, target, id, &dep_ids, &tarball);
+        let script = script(self.jobs, recipe, target, id, &dep_ids, tarball.as_deref());
         let script_path = work.join("build.sh");
         fs::write(&script_path, &script)?;
 
@@ -146,6 +184,12 @@ impl Engine {
             .arg(format!("{}:{}:ro", self.root.join("sources").display(), store::C_SOURCES))
             .arg("-v")
             .arg(format!("{}:{}:ro", sysroot.display(), store::C_SYSROOT))
+            .arg("-v")
+            .arg(format!(
+                "{}:{}:ro",
+                self.root.join(&target.kernel_config).display(),
+                C_KERNEL_CONFIG
+            ))
             .arg("-w")
             .arg(store::C_WORK)
             .arg(&self.seed)
@@ -193,6 +237,22 @@ impl Engine {
             );
         }
 
+        // a host tool installs at its store path, so its bin/ is its prefix
+        if recipe.kind == Kind::Target
+            && let Some(dir) = installs_beside_usr(&out)?
+        {
+            self.store.discard(id);
+            bail!(
+                "{} {} installed a /{dir} directory\n  \
+                 /bin, /sbin, /lib and /lib64 are symlinks into /usr in this core; \
+                 tell the build to install under /usr (--bindir, --sbindir, --libdir or their equivalent)\n  \
+                 script: {}",
+                recipe.name,
+                recipe.version,
+                script_path.display()
+            );
+        }
+
         self.store.finalize(
             id,
             &format!(
@@ -207,46 +267,46 @@ impl Engine {
 
     /// Fetch on the host, because the build container has no network.
     /// Verified before it is put where a build can see it.
-    fn fetch(&self, recipe: &Recipe) -> Result<String> {
+    fn fetch(&self, recipe: &Recipe, source: &Source) -> Result<String> {
         let dir = self.root.join("sources");
         fs::create_dir_all(&dir)?;
-        let name = recipe.tarball().to_string();
+        let name = source.tarball().to_string();
         let final_path = dir.join(&name);
 
         if final_path.exists() {
             let got = crate::sha256::digest_file(&final_path)?;
-            if got == recipe.source.sha256 {
+            if got == source.sha256 {
                 return Ok(name);
             }
             bail!(
                 "{} has sha256 {got}, but {} pins {}\nremove it if upstream was re-rolled, but check why first",
                 final_path.display(),
                 recipe.path.display(),
-                recipe.source.sha256
+                source.sha256
             );
         }
 
-        println!("fetch {}", recipe.source.url);
+        println!("fetch {}", source.url);
         let part = dir.join(format!("{name}.part"));
         let status = Command::new("curl")
             .args(["-fsSL", "--retry", "3", "-o"])
             .arg(&part)
-            .arg(&recipe.source.url)
+            .arg(&source.url)
             .status()
             .map_err(|e| Error::new(format!("running curl: {e}")))?;
         if !status.success() {
             let _ = fs::remove_file(&part);
-            bail!("could not fetch {}", recipe.source.url);
+            bail!("could not fetch {}", source.url);
         }
 
         let got = crate::sha256::digest_file(&part)?;
-        if got != recipe.source.sha256 {
+        if got != source.sha256 {
             let _ = fs::remove_file(&part);
             bail!(
                 "{} has sha256 {got}, but {} pins {}",
-                recipe.source.url,
+                source.url,
                 recipe.path.display(),
-                recipe.source.sha256
+                source.sha256
             );
         }
         fs::rename(&part, &final_path)?;
@@ -263,7 +323,7 @@ pub fn script(
     target: &Target,
     id: &str,
     dep_ids: &[(&str, Kind, String)],
-    tarball: &str,
+    tarball: Option<&str>,
 ) -> String {
     {
         let mut s = String::new();
@@ -276,9 +336,17 @@ pub fn script(
         // empty unless the container itself failed to start.
         s.push_str("exec > /kb/work/build.log 2>&1\nset -x\n\n");
 
-        let path_extra: Vec<String> = dep_ids
+        // What a recipe declares comes before what that drags in: gcc and
+        // gcc-bootstrap both install `$TRIPLE-gcc`, and the bootstrap one,
+        // built without headers, thinks MB_LEN_MAX is 1.
+        let direct: Vec<&str> = recipe.all_deps().collect();
+        let (declared, dragged_in): (Vec<_>, Vec<_>) = dep_ids
             .iter()
             .filter(|(_, kind, _)| *kind == Kind::HostTool)
+            .partition(|(n, _, _)| direct.contains(n));
+        let path_extra: Vec<String> = declared
+            .iter()
+            .chain(dragged_in.iter())
             .map(|(_, _, id)| format!("{}/{id}/bin", store::C_STORE))
             .collect();
 
@@ -288,6 +356,7 @@ pub fn script(
         s.push_str(&format!("export ARCH=\"{}\"\n", target.arch));
         s.push_str(&format!("export KARCH=\"{}\"\n", target.kernel_arch));
         s.push_str(&format!("export JOBS={jobs}\n"));
+        s.push_str(&format!("export {KERNEL_CONFIG_VAR_NAME}={C_KERNEL_CONFIG}\n"));
         s.push_str("export BUILD_TRIPLE=\"$(gcc -dumpmachine)\"\n");
         if !path_extra.is_empty() {
             s.push_str(&format!("export PATH=\"{}:$PATH\"\n", path_extra.join(":")));
@@ -299,7 +368,6 @@ pub fn script(
         //
         // Direct dependencies only. A recipe that reaches for something it
         // did not declare has a dependency it is not admitting to.
-        let direct: Vec<&str> = recipe.all_deps().collect();
         for (name, _, id) in dep_ids.iter().filter(|(n, _, _)| direct.contains(n)) {
             let var = name.to_uppercase().replace('-', "_");
             s.push_str(&format!("export KB_{var}={}/{id}\n", store::C_STORE));
@@ -328,17 +396,22 @@ pub fn script(
             s.push_str(&format!("export {k}=\"{v}\"\n"));
         }
 
-        s.push_str(&format!(
-            // --no-same-owner: tar runs as root in the container and would
-            // otherwise restore the uids recorded in the tarball. gcc's ships
-            // uid 1000, which maps into the host's subuid range, and the
-            // result is a scratch tree the invoking user cannot delete. That
-            // is the post-mortem's uid-100997 trap wearing a different hat.
-            "\nmkdir -p {work}/src\ntar -xf {src}/{tarball} -C {work}/src --no-same-owner --strip-components={strip}\nexport SRC={work}/src\n\n",
-            work = store::C_WORK,
-            src = store::C_SOURCES,
-            strip = recipe.source.strip,
-        ));
+        // A recipe with no upstream still gets an empty $SRC, so a script
+        // that cds into it fails the same way whatever the recipe looks like.
+        s.push_str(&format!("\nmkdir -p {}/src\nexport SRC={}/src\n", store::C_WORK, store::C_WORK));
+        if let (Some(tarball), Some(source)) = (tarball, &recipe.source) {
+            s.push_str(&format!(
+                // --no-same-owner: tar runs as root in the container and would
+                // otherwise restore the uids recorded in the tarball. gcc's ships
+                // uid 1000, which maps into the host's subuid range, and the
+                // result is a scratch tree the invoking user cannot delete. That
+                // is the post-mortem's uid-100997 trap wearing a different hat.
+                "tar -xf {src}/{tarball} -C $SRC --no-same-owner --strip-components={strip}\n",
+                src = store::C_SOURCES,
+                strip = source.strip,
+            ));
+        }
+        s.push('\n');
 
         match recipe.build.system {
             System::Shell => {
@@ -413,8 +486,20 @@ fn contains_a_file(dir: &Path) -> Result<bool> {
     Ok(false)
 }
 
-/// `None` means the recipe said nothing, so run the usual thing.
-/// `Some([])` means the recipe said "not this step", so run nothing.
+/// The name of a top-level directory that only the layout may provide, if
+/// the package installed one. A symlink is fine: that is the layout itself.
+fn installs_beside_usr(out: &Path) -> Result<Option<&'static str>> {
+    for dir in ["bin", "sbin", "lib", "lib64"] {
+        let path = out.join(dir);
+        if let Ok(meta) = path.symlink_metadata()
+            && meta.is_dir()
+        {
+            return Ok(Some(dir));
+        }
+    }
+    Ok(None)
+}
+
 /// A recipe's build id, given the ids of everything it depends on.
 /// Both the builder and `sysroot_of` go through here, so they cannot drift.
 fn id_of(recipe: &Recipe, target: &Target, ids: &BTreeMap<String, String>) -> String {
@@ -446,12 +531,7 @@ mod tests {
     use crate::target::Target;
 
     fn target() -> Target {
-        Target {
-            name: "cloud".into(),
-            triple: "x86_64-koompi-linux-gnu".into(),
-            arch: "x86_64".into(),
-            kernel_arch: "x86".into(),
-        }
+        Target::for_test("cloud", "x86_64-koompi-linux-gnu", "x86_64", "x86")
     }
 
     fn recipe(system: System, make: Option<Vec<&str>>, install: Option<Vec<&str>>) -> Recipe {
@@ -459,11 +539,11 @@ mod tests {
             name: "pkg".into(),
             version: "1.0".into(),
             kind: Kind::Target,
-            source: Source {
+            source: Some(Source {
                 url: "https://example.invalid/pkg-1.0.tar.xz".into(),
                 sha256: "0".repeat(64),
                 strip: 1,
-            },
+            }),
             build: Build {
                 system,
                 out_of_tree: true,
@@ -480,7 +560,7 @@ mod tests {
     }
 
     fn render(r: &Recipe, deps: &[(&str, Kind, String)]) -> String {
-        script(4, r, &target(), "abc-pkg-1.0", deps, "pkg-1.0.tar.xz")
+        script(4, r, &target(), "abc-pkg-1.0", deps, Some("pkg-1.0.tar.xz"))
     }
 
     #[test]
@@ -492,7 +572,22 @@ mod tests {
         assert!(s.contains("export JOBS=4"), "{s}");
         // Recipe env comes after the engine's, so it can refer to it.
         assert!(s.find("export KARCH").unwrap() < s.find("export ARCH=\"$KARCH\"").unwrap());
-        assert!(s.contains("tar -xf /kb/sources/pkg-1.0.tar.xz -C /kb/work/src --no-same-owner --strip-components=1"), "{s}");
+        assert!(s.contains("tar -xf /kb/sources/pkg-1.0.tar.xz -C $SRC --no-same-owner --strip-components=1"), "{s}");
+    }
+
+    #[test]
+    fn a_recipe_with_no_source_still_gets_an_empty_src() {
+        let mut r = recipe(System::Configure, None, None);
+        r.source = None;
+        let s = script(4, &r, &target(), "abc-pkg-1.0", &[], None);
+        assert!(!s.contains("tar -xf"), "something was unpacked:\n{s}");
+        assert!(s.contains("export SRC=/kb/work/src"), "{s}");
+    }
+
+    #[test]
+    fn the_kernel_config_fragment_is_where_the_recipe_expects_it() {
+        let s = render(&recipe(System::Configure, None, None), &[]);
+        assert!(s.contains("export KERNEL_CONFIG=/kb/kernel.config"), "{s}");
     }
 
     #[test]
@@ -527,6 +622,23 @@ mod tests {
         let s = render(&recipe(System::Configure, None, None), &deps);
         assert!(s.contains("export PATH=\"/kb/store/aaa-binutils-2.47/bin:$PATH\""), "{s}");
         assert!(!s.contains("bbb-glibc-2.44"), "a sysroot package reached PATH:\n{s}");
+    }
+
+    #[test]
+    fn a_declared_dependency_shadows_what_it_drags_in() {
+        let mut r = recipe(System::Configure, None, None);
+        r.deps.build = vec!["gcc".into()];
+        // closure order: gcc-bootstrap is built before gcc
+        let deps = [
+            ("binutils", Kind::HostTool, "aaa-binutils-2.47".to_string()),
+            ("gcc-bootstrap", Kind::HostTool, "bbb-gcc-bootstrap-15.3.0".to_string()),
+            ("gcc", Kind::HostTool, "ccc-gcc-15.3.0".to_string()),
+        ];
+        let s = render(&r, &deps);
+        assert!(
+            s.contains("export PATH=\"/kb/store/ccc-gcc-15.3.0/bin:/kb/store/aaa-binutils-2.47/bin:/kb/store/bbb-gcc-bootstrap-15.3.0/bin:$PATH\""),
+            "{s}"
+        );
     }
 
     #[test]
@@ -566,6 +678,18 @@ mod tests {
         r.kind = Kind::HostTool;
         let s = render(&r, &[]);
         assert!(!s.contains("export CC="), "a host tool was cross-configured:\n{s}");
+    }
+
+    #[test]
+    fn a_real_bin_directory_is_caught_and_the_layout_symlink_is_not() {
+        let dir = std::env::temp_dir().join(format!("kb-beside-usr-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("usr/bin")).unwrap();
+        std::os::unix::fs::symlink("usr/bin", dir.join("bin")).unwrap();
+        assert_eq!(installs_beside_usr(&dir).unwrap(), None);
+        fs::create_dir_all(dir.join("sbin")).unwrap();
+        assert_eq!(installs_beside_usr(&dir).unwrap(), Some("sbin"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

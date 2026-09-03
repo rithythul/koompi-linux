@@ -1,0 +1,108 @@
+# How this core boots: dinit's services, the early mounts, the selftest and
+# /init itself. Policy rather than software, which is why it has no upstream
+# and why it is not part of the layout: the layout is what every package
+# stands on, and this is what runs on top of all of them.
+name = "boot-services"
+version = "1"
+kind = "target"
+
+[build]
+system = "shell"
+script = """
+install -d "$OUT"/etc/dinit.d "$OUT"/etc/dinit "$OUT"/usr/libexec/koompi
+
+# What the kernel executes out of an initramfs, so the image carries its own
+# answer to what PID 1 is rather than taking it from a command line.
+ln -s usr/bin/dinit "$OUT"/init
+
+# dinit reads this when it is the system manager, so every service starts
+# with a PATH rather than inheriting the kernel's empty environment.
+cat > "$OUT"/etc/dinit/environment <<'EOF'
+PATH=/usr/bin:/usr/sbin
+TERM=linux
+EOF
+
+cat > "$OUT"/etc/dinit.d/boot <<'EOF'
+type = internal
+depends-on: early-filesystems
+depends-on: console
+depends-on: selftest
+EOF
+
+cat > "$OUT"/etc/dinit.d/early-filesystems <<'EOF'
+type = scripted
+command = /usr/libexec/koompi/early-fs
+EOF
+
+cat > "$OUT"/etc/dinit.d/console <<'EOF'
+type = process
+command = /usr/sbin/agetty --skip-login --noclear --login-program /usr/bin/bash console
+restart = true
+depends-on: early-filesystems
+EOF
+
+cat > "$OUT"/etc/dinit.d/selftest <<'EOF'
+type = scripted
+command = /usr/libexec/koompi/selftest
+depends-on: early-filesystems
+depends-on: console
+EOF
+
+cat > "$OUT"/usr/libexec/koompi/early-fs <<'EOF'
+#!/bin/bash
+# / is the initramfs itself and is already writable, so only the kernel's own
+# filesystems are mounted here.
+set -eu
+export PATH=/usr/bin:/usr/sbin
+mount -t proc -o nosuid,noexec,nodev proc /proc
+mount -t sysfs -o nosuid,noexec,nodev sys /sys
+mount -t devtmpfs -o nosuid,mode=0755 dev /dev
+mkdir -p /dev/pts /dev/shm
+mount -t devpts -o gid=5,mode=620 devpts /dev/pts
+mount -t tmpfs -o nosuid,nodev tmpfs /dev/shm
+EOF
+
+# Runs on every boot and does nothing unless asked, so what the smoke test
+# exercises is the boot everyone else gets.
+cat > "$OUT"/usr/libexec/koompi/selftest <<'EOF'
+#!/bin/bash
+set -u
+export PATH=/usr/bin:/usr/sbin
+# a service's output goes to its logfile, not the console; this is a verdict
+exec >/dev/console 2>&1
+read -r cmdline < /proc/cmdline
+[[ " $cmdline " == *" koompi.selftest "* ]] || exit 0
+
+fails=0
+check() {
+    if "${@:2}" >/dev/null 2>&1; then
+        echo "SELFTEST ok   $1"
+    else
+        echo "SELFTEST FAIL $1"
+        fails=$((fails + 1))
+    fi
+}
+
+echo "SELFTEST kernel $(uname -srm)"
+check "coreutils runs"    ls /usr/bin
+check "bash runs"         bash -c 'test $((1 + 1)) = 2'
+check "proc is mounted"   test -d /proc/1
+check "dev is devtmpfs"   test -c /dev/null
+check "util-linux runs"   dmesg -t
+check "dinit is pid 1"    test "$(readlink /proc/1/exe)" = /usr/bin/dinit
+check "dinit answers"     dinitctl status console
+
+if [ "$fails" -eq 0 ]; then
+    echo "SELFTEST PASSED"
+else
+    echo "SELFTEST FAILED: $fails"
+fi
+poweroff
+EOF
+
+chmod 755 "$OUT"/usr/libexec/koompi/early-fs "$OUT"/usr/libexec/koompi/selftest
+"""
+
+[deps]
+build = []
+runtime = ["filesystem", "bash", "coreutils", "util-linux", "dinit"]

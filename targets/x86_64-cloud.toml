@@ -3,3 +3,10 @@ name = "x86_64-cloud"
 triple = "x86_64-koompi-linux-gnu"
 arch = "x86_64"
 kernel_arch = "x86"
+kernel_config = "config/kernel/x86_64-cloud.config"
+contents = ["boot-services", "linux"]
+
+[boot]
+machine = "q35"
+cpu = "max"
+console = "ttyS0"

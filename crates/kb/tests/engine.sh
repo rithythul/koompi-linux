@@ -55,13 +55,20 @@ tar -czf "$work/upstream/hello-1.0.tar.gz" -C "$work/upstream" hello-1.0
 sum=$(sha256sum "$work/upstream/hello-1.0.tar.gz" | cut -d' ' -f1)
 
 repo="$work/repo"
-mkdir -p "$repo/recipes" "$repo/targets" "$repo/seed"
+mkdir -p "$repo/recipes" "$repo/targets" "$repo/seed" "$repo/config/kernel"
 cp "$seed_digest" "$repo/seed/DIGEST"
+echo "CONFIG_TEST=y" > "$repo/config/kernel/testtarget.config"
 cat > "$repo/targets/testtarget.toml" <<'T'
 name = "testtarget"
 triple = "x86_64-koompi-linux-gnu"
 arch = "x86_64"
 kernel_arch = "x86"
+kernel_config = "config/kernel/testtarget.config"
+contents = ["hello"]
+
+[boot]
+machine = "q35"
+console = "ttyS0"
 T
 write_recipe() {
     cat > "$repo/recipes/hello.toml" <<R
@@ -135,6 +142,48 @@ echo "7. a recipe that names an architecture is refused"
 write_recipe "$sum" 'make = ["--host=x86_64-koompi-linux-gnu"]'
 out=$("$kb" build hello --target testtarget 2>&1 || true)
 contains "the lint fires before the build" "$out" "put it in the target file"
+
+echo "8. a recipe with no upstream builds from its script alone"
+cat > "$repo/recipes/layout.toml" <<'R'
+name = "layout"
+version = "1"
+kind = "target"
+
+[build]
+system = "shell"
+script = """
+install -d "$OUT/usr/lib"
+ln -s usr/lib "$OUT/lib64"
+printf 'config=%s\n' "$(cat "$KERNEL_CONFIG")" > "$OUT/usr/lib/seen"
+"""
+R
+write_recipe "$sum" ""
+out=$("$kb" build layout --target testtarget 2>&1) || { echo "$out"; exit 1; }
+entry=$(ls -d "$repo"/build/store/*-layout-1)
+check "the symlink was installed" "$(readlink "$entry/lib64")" "usr/lib"
+check "the kernel config fragment was mounted" "$(cat "$entry/usr/lib/seen")" "config=CONFIG_TEST=y"
+
+echo "9. editing the kernel config fragment rebuilds only what read it"
+"$kb" build hello --target testtarget >/dev/null 2>&1
+echo "CONFIG_TEST=n" > "$repo/config/kernel/testtarget.config"
+out=$("$kb" build hello --target testtarget 2>&1)
+contains "a recipe that never read it is still cached" "$out" "(cached)"
+out=$("$kb" build layout --target testtarget 2>&1)
+contains "the one that read it is rebuilt" "$out" "build layout 1"
+rm "$repo/recipes/layout.toml"
+
+echo "10. a recipe with no upstream and no script is refused"
+cat > "$repo/recipes/layout.toml" <<'R'
+name = "layout"
+version = "1"
+kind = "target"
+
+[build]
+system = "make"
+R
+out=$("$kb" build layout --target testtarget 2>&1 || true)
+contains "names the rule" "$out" 'no [source] must use system = "shell"'
+rm "$repo/recipes/layout.toml"
 
 echo
 if [ "$fails" -eq 0 ]; then

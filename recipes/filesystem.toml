@@ -1,0 +1,56 @@
+# The layout and the identity files: what every other package assumes is
+# there, and nothing that runs. plan.md calls for this by name in M2, because
+# gcc bakes a per-architecture loader path (/lib64/... on one target, /lib/...
+# on the other) while glibc installs the loader under /usr/lib, and a recipe
+# may not name an architecture. Symlinks close that gap for every target at
+# once. No package may install a real directory at any of those names; the
+# engine refuses one that does.
+name = "filesystem"
+version = "1"
+kind = "target"
+
+[build]
+system = "shell"
+script = """
+install -d "$OUT"/usr/bin "$OUT"/usr/sbin "$OUT"/usr/lib "$OUT"/usr/libexec \
+           "$OUT"/etc "$OUT"/var/log "$OUT"/run \
+           "$OUT"/proc "$OUT"/sys "$OUT"/dev "$OUT"/root "$OUT"/mnt
+install -d -m 1777 "$OUT"/tmp
+
+ln -s usr/bin "$OUT"/bin
+ln -s usr/sbin "$OUT"/sbin
+ln -s usr/lib "$OUT"/lib
+ln -s usr/lib "$OUT"/lib64
+ln -s ../run "$OUT"/var/run
+# /bin/sh is what every #! script asks for; this core's sh is bash
+ln -s bash "$OUT"/usr/bin/sh
+
+cat > "$OUT"/etc/os-release <<'EOF'
+NAME="KOOMPI Linux"
+ID=koompi
+PRETTY_NAME="KOOMPI Linux"
+EOF
+
+cat > "$OUT"/etc/passwd <<'EOF'
+root:x:0:0:root:/root:/bin/bash
+EOF
+
+cat > "$OUT"/etc/group <<'EOF'
+root:x:0:
+tty:x:5:
+EOF
+
+echo koompi > "$OUT"/etc/hostname
+
+cat > "$OUT"/etc/nsswitch.conf <<'EOF'
+passwd: files
+group: files
+shadow: files
+hosts: files
+EOF
+
+cat > "$OUT"/etc/profile <<'EOF'
+export PATH=/usr/bin:/usr/sbin
+export PS1='koompi# '
+EOF
+"""

@@ -18,7 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Bumped when the engine changes how it builds, invalidating every store entry.
-const ENGINE: &str = "kb-build-v3";
+const ENGINE: &str = "kb-build-v4";
 
 pub const MARKER: &str = ".kb-ok";
 
@@ -103,6 +103,10 @@ pub fn build_id(recipe: &Recipe, target: &Target, dep_ids: &BTreeMap<String, Str
     h.update(recipe.version.as_bytes());
     h.update(b"\n");
     h.update(sha256::digest(&recipe.raw).as_bytes());
+    if recipe.reads_kernel_config() {
+        h.update(b"\nkernel-config\n");
+        h.update(target.kernel_identity().as_bytes());
+    }
     h.update(b"\ndeps\n");
     // BTreeMap iterates sorted, so the id does not depend on discovery order.
     for (name, id) in dep_ids {

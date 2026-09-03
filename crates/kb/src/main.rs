@@ -3,10 +3,15 @@
 //! One binary, because the constraint the whole spec serves is that a person
 //! can read the core in a day, and that includes the thing that builds it.
 
+mod boot;
 mod build;
+mod cpio;
+mod elf;
 mod err;
 mod graph;
+mod image;
 mod lint;
+mod provenance;
 mod read;
 mod recipe;
 mod sha256;
@@ -24,10 +29,15 @@ kb — the KOOMPI Linux build engine
   kb targets                           list the declared targets
   kb build <recipe> --target <name>    build a recipe and everything under it
   kb sysroot <recipe> --target <name>  print the sysroot that recipe builds against
+  kb image <target>                    build the target's contents and assemble its image
+  kb check-provenance <target>         fail if anything in the image is not ours
+  kb boot <target> [--smoke]           boot the image in QEMU; --smoke runs the selftest
 
 options
-  --target <name>   required by build
+  --target <name>   required by build and sysroot
   --jobs <n>        parallel make jobs (default: all cores)
+  --timeout <secs>  how long --smoke waits for a verdict (default: 300)
+  --memory <mib>    guest memory (default: 4096)
 ";
 
 fn main() {
@@ -46,16 +56,15 @@ fn run() -> Result<()> {
 
     let root = repo_root()?;
     let recipes_dir = root.join("recipes");
-    let targets_dir = root.join("targets");
 
     match command.as_str() {
         "lint" => {
             let recipes = recipe::load_all(&recipes_dir)?;
-            let targets = target::load_all(&targets_dir)?;
+            let targets = target::load_all(&root)?;
             lint::run(&recipes, &targets)
         }
         "targets" => {
-            for t in target::load_all(&targets_dir)? {
+            for t in target::load_all(&root)? {
                 println!("{:<20} {}", t.name, t.triple);
             }
             Ok(())
@@ -70,12 +79,11 @@ fn run() -> Result<()> {
             };
 
             let recipes = recipe::load_all(&recipes_dir)?;
-            let targets = target::load_all(&targets_dir)?;
-            // Lint before building: a recipe that names an architecture would
-            // build fine and quietly break the claim the gate is testing.
+            let targets = target::load_all(&root)?;
+            // a recipe that names an architecture builds fine and breaks the gate silently
             lint::run(&recipes, &targets)?;
 
-            let target = target::Target::load(&targets_dir, target_name)?;
+            let target = target::Target::load(&root, target_name)?;
             let engine = build::Engine::new(&root, opts.jobs)?;
             let id = engine.build(&recipes, name, &target)?;
             println!("{}", engine.store.path(&id).display());
@@ -90,10 +98,50 @@ fn run() -> Result<()> {
                 bail!("sysroot needs --target\n\n{USAGE}")
             };
             let recipes = recipe::load_all(&recipes_dir)?;
-            let target = target::Target::load(&targets_dir, target_name)?;
+            let target = target::Target::load(&root, target_name)?;
             let engine = build::Engine::new(&root, opts.jobs)?;
             println!("{}", engine.sysroot_of(&recipes, name, &target)?.display());
             Ok(())
+        }
+        "image" => {
+            let opts = Options::parse(&args[1..])?;
+            let Some(target_name) = opts.positional.first() else {
+                bail!("image needs a target name\n\n{USAGE}")
+            };
+            let recipes = recipe::load_all(&recipes_dir)?;
+            let targets = target::load_all(&root)?;
+            lint::run(&recipes, &targets)?;
+            let target = target::Target::load(&root, target_name)?;
+            let engine = build::Engine::new(&root, opts.jobs)?;
+            let image = image::assemble(&engine, &recipes, &target)?;
+            println!("{}", image.dir.display());
+            Ok(())
+        }
+        "check-provenance" => {
+            let opts = Options::parse(&args[1..])?;
+            let Some(target_name) = opts.positional.first() else {
+                bail!("check-provenance needs a target name\n\n{USAGE}")
+            };
+            let target = target::Target::load(&root, target_name)?;
+            let engine = build::Engine::new(&root, opts.jobs)?;
+            provenance::check(&engine, &target)
+        }
+        "boot" => {
+            let opts = Options::parse(&args[1..])?;
+            let Some(target_name) = opts.positional.first() else {
+                bail!("boot needs a target name\n\n{USAGE}")
+            };
+            let target = target::Target::load(&root, target_name)?;
+            let engine = build::Engine::new(&root, opts.jobs)?;
+            boot::run(
+                &engine,
+                &target,
+                &boot::Options {
+                    smoke: opts.smoke,
+                    timeout: std::time::Duration::from_secs(opts.timeout),
+                    memory_mb: opts.memory,
+                },
+            )
         }
         "-h" | "--help" | "help" => {
             print!("{USAGE}");
@@ -107,6 +155,9 @@ struct Options {
     positional: Vec<String>,
     target: Option<String>,
     jobs: usize,
+    smoke: bool,
+    timeout: u64,
+    memory: u32,
 }
 
 impl Options {
@@ -115,6 +166,9 @@ impl Options {
             positional: Vec::new(),
             target: None,
             jobs: cores(),
+            smoke: false,
+            timeout: 300,
+            memory: 4096,
         };
         let mut it = args.iter();
         while let Some(arg) = it.next() {
@@ -127,20 +181,26 @@ impl Options {
                     );
                 }
                 "--jobs" => {
-                    let v = it.next().ok_or_else(|| Error::new("--jobs needs a value"))?;
-                    opts.jobs = v
-                        .parse()
-                        .map_err(|_| Error::new(format!("--jobs `{v}` is not a number")))?;
+                    opts.jobs = number(it.next(), "--jobs")?;
                     if opts.jobs == 0 {
                         bail!("--jobs must be at least 1");
                     }
                 }
+                "--timeout" => opts.timeout = number(it.next(), "--timeout")?,
+                "--memory" => opts.memory = number(it.next(), "--memory")?,
+                "--smoke" => opts.smoke = true,
                 other if other.starts_with('-') => bail!("unknown option `{other}`"),
                 other => opts.positional.push(other.to_string()),
             }
         }
         Ok(opts)
     }
+}
+
+fn number<T: std::str::FromStr>(value: Option<&String>, flag: &str) -> Result<T> {
+    let v = value.ok_or_else(|| Error::new(format!("{flag} needs a value")))?;
+    v.parse()
+        .map_err(|_| Error::new(format!("{flag} `{v}` is not a number")))
 }
 
 /// Attempt one's bottleneck was one machine at load 18, so the default is

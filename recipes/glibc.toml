@@ -23,7 +23,11 @@ configure = [
 ]
 # Installed with a prefix of /usr into a staging root, so the store entry is a
 # sysroot fragment rather than something that has to be relocated.
-install = ["DESTDIR=$OUT", "install"]
+#
+# rootsbindir on the make line, not configure: with a /usr prefix, configure
+# overwrites the cache variable with /sbin unconditionally, and /sbin is a
+# symlink in this core.
+install = ["DESTDIR=$OUT", "rootsbindir=/usr/sbin", "install"]
 
 [deps]
 build = ["binutils", "gcc-bootstrap", "linux-headers"]

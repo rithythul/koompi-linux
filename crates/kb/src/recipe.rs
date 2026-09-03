@@ -40,6 +40,17 @@ pub struct Source {
     pub strip: u32,
 }
 
+impl Source {
+    /// The basename the tarball is stored under.
+    pub fn tarball(&self) -> &str {
+        self.url
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("source")
+    }
+}
+
 #[derive(Debug)]
 pub struct Build {
     pub system: System,
@@ -73,7 +84,10 @@ pub struct Recipe {
     pub name: String,
     pub version: String,
     pub kind: Kind,
-    pub source: Source,
+    /// Absent for a recipe that has no upstream: the filesystem layout and
+    /// the toolchain's own runtime libraries are ours, and inventing a
+    /// tarball to hold them would be a lie the format then has to carry.
+    pub source: Option<Source>,
     pub build: Build,
     pub deps: Deps,
     pub path: PathBuf,
@@ -102,22 +116,22 @@ impl Recipe {
             other => bail!("{origin}: kind `{other}` is not `host-tool` or `target`"),
         };
 
-        let source = {
-            let Some(mut s) = r.table_opt("source")? else {
-                bail!("{origin}: a [source] table is required")
-            };
-            let url = s.str_req("url")?.to_string();
-            let sha256 = s.str_req("sha256")?.to_string();
-            if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-                bail!("{origin}: sha256 must be 64 hex characters");
+        let source = match r.table_opt("source")? {
+            None => None,
+            Some(mut s) => {
+                let url = s.str_req("url")?.to_string();
+                let sha256 = s.str_req("sha256")?.to_string();
+                if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    bail!("{origin}: sha256 must be 64 hex characters");
+                }
+                let strip = match s.int_opt("strip")? {
+                    Some(n) if n < 0 => bail!("{origin}: strip cannot be negative"),
+                    Some(n) => n as u32,
+                    None => 1,
+                };
+                s.finish()?;
+                Some(Source { url, sha256, strip })
             }
-            let strip = match s.int_opt("strip")? {
-                Some(n) if n < 0 => bail!("{origin}: strip cannot be negative"),
-                Some(n) => n as u32,
-                None => 1,
-            };
-            s.finish()?;
-            Source { url, sha256, strip }
         };
 
         let build = {
@@ -152,11 +166,18 @@ impl Recipe {
                 System::Shell if !configure.is_empty() || make.is_some() => {
                     bail!("{origin}: system = \"shell\" ignores `configure` and `make`; put it all in `script`")
                 }
+                // a valid shell recipe: everything it does is in the script
+                System::Shell => {}
                 _ if script.is_some() => {
                     bail!("{origin}: `script` is only for system = \"shell\"")
                 }
                 System::Make if !configure.is_empty() => {
                     bail!("{origin}: system = \"make\" has no configure step")
+                }
+                // Without a source there is no tree to configure or make in,
+                // so the only thing a recipe can do is say what it creates.
+                _ if source.is_none() && system != System::Shell => {
+                    bail!("{origin}: a recipe with no [source] must use system = \"shell\"")
                 }
                 _ => {}
             }
@@ -221,6 +242,12 @@ impl Recipe {
         })
     }
 
+    /// Does this recipe read the target's kernel config fragment? Only such a
+    /// recipe is rebuilt when the fragment changes.
+    pub fn reads_kernel_config(&self) -> bool {
+        String::from_utf8_lossy(&self.raw).contains(crate::build::KERNEL_CONFIG_VAR)
+    }
+
     /// Every dependency, in one list. Order is build then runtime.
     pub fn all_deps(&self) -> impl Iterator<Item = &str> {
         self.deps
@@ -230,15 +257,6 @@ impl Recipe {
             .map(String::as_str)
     }
 
-    /// The basename the source tarball is stored under.
-    pub fn tarball(&self) -> &str {
-        self.source
-            .url
-            .rsplit('/')
-            .next()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("source")
-    }
 }
 
 /// Load every `recipes/*.toml`, keyed by name.

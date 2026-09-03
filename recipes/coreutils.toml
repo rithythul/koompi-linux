@@ -1,0 +1,33 @@
+# ls, cp, mkdir and the rest of the floor every script stands on.
+name = "coreutils"
+version = "9.11"
+kind = "target"
+
+[source]
+url = "https://ftp.gnu.org/gnu/coreutils/coreutils-9.11.tar.xz"
+sha256 = "394024eda0a5955217ceda9cd1201e65dc8fa3aa29c2951135a49521d57c3cc3"
+
+[build]
+system = "configure"
+configure = [
+  "--prefix=/usr",
+  "--host=$TRIPLE",
+  "--build=$BUILD_TRIPLE",
+  "--disable-nls",
+  # kill comes from util-linux; uptime needs utmp, which this core has no
+  # story for yet.
+  "--enable-no-install-program=kill,uptime",
+]
+install = ["DESTDIR=$OUT", "install"]
+
+[build.env]
+# Builds run as root inside the seed container, and coreutils' configure
+# refuses that unless it is told the situation is understood.
+FORCE_UNSAFE_CONFIGURE = "1"
+# gnulib cannot run its MB_CUR_MAX probe when the binary is for another
+# machine, and its cross fallback is the pessimistic answer.
+gl_cv_macro_MB_CUR_MAX_good = "y"
+
+[deps]
+build = ["gcc"]
+runtime = ["glibc"]

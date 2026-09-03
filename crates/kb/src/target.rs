@@ -8,7 +8,15 @@ use crate::err::{Result, bail};
 use crate::read::Reader;
 use crate::toml;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug)]
+pub struct Boot {
+    pub machine: String,
+    pub cpu: Option<String>,
+    /// kernel name for the serial console, e.g. ttyS0
+    pub console: String,
+}
 
 #[derive(Debug)]
 pub struct Target {
@@ -19,13 +27,20 @@ pub struct Target {
     pub arch: String,
     /// The processor family, as kbuild spells it. Not always the same.
     pub kernel_arch: String,
+    /// repo-relative fragment merged over `make defconfig`
+    pub kernel_config: PathBuf,
+    /// what an image is assembled from, before runtime dependencies
+    pub contents: Vec<String>,
+    pub boot: Boot,
+    kernel_config_digest: String,
 }
 
 impl Target {
-    pub fn load(dir: &Path, name: &str) -> Result<Target> {
+    pub fn load(root: &Path, name: &str) -> Result<Target> {
+        let dir = root.join("targets");
         let path = dir.join(format!("{name}.toml"));
         if !path.exists() {
-            let known = list(dir).unwrap_or_default().join(", ");
+            let known = list(&dir).unwrap_or_default().join(", ");
             bail!("no target `{name}`; known targets: {known}");
         }
         let text = fs::read_to_string(&path)
@@ -34,18 +49,45 @@ impl Target {
         let origin = path.display().to_string();
         let mut r = Reader::new(&origin, &table);
 
-        let target = Target {
-            name: r.str_req("name")?.to_string(),
-            triple: r.str_req("triple")?.to_string(),
-            arch: r.str_req("arch")?.to_string(),
-            kernel_arch: r.str_req("kernel_arch")?.to_string(),
+        let name_field = r.str_req("name")?.to_string();
+        let triple = r.str_req("triple")?.to_string();
+        let arch = r.str_req("arch")?.to_string();
+        let kernel_arch = r.str_req("kernel_arch")?.to_string();
+        let kernel_config = PathBuf::from(r.str_req("kernel_config")?);
+        let contents = r.strs("contents")?;
+        let boot = {
+            let Some(mut b) = r.table_opt("boot")? else {
+                bail!("{origin}: a [boot] table is required")
+            };
+            let machine = b.str_req("machine")?.to_string();
+            let cpu = b.str_opt("cpu")?.map(str::to_string);
+            let console = b.str_req("console")?.to_string();
+            b.finish()?;
+            Boot { machine, cpu, console }
         };
         r.finish()?;
 
-        if target.name != name {
-            bail!("{origin}: name is `{}` but the file is `{name}.toml`", target.name);
+        if name_field != name {
+            bail!("{origin}: name is `{name_field}` but the file is `{name}.toml`");
         }
-        Ok(target)
+        if kernel_config.is_absolute() {
+            bail!("{origin}: kernel_config must be relative to the repository");
+        }
+        let config_path = root.join(&kernel_config);
+        let config = fs::read(&config_path).map_err(|e| {
+            crate::err::Error::new(format!("{origin}: kernel_config {}: {e}", config_path.display()))
+        })?;
+
+        Ok(Target {
+            name: name_field,
+            triple,
+            arch,
+            kernel_arch,
+            kernel_config,
+            contents,
+            boot,
+            kernel_config_digest: crate::sha256::digest(&config),
+        })
     }
 
     /// The fields a build depends on. Deliberately not the whole file: adding
@@ -54,9 +96,34 @@ impl Target {
         format!("{}\n{}\n{}\n", self.triple, self.arch, self.kernel_arch)
     }
 
+    /// out of `build_identity` so a fragment edit rebuilds the kernel, not the toolchain
+    pub fn kernel_identity(&self) -> &str {
+        &self.kernel_config_digest
+    }
+
     /// Every literal a recipe is forbidden to contain.
     pub fn reserved_tokens(&self) -> Vec<&str> {
         vec![&self.triple, &self.arch, &self.kernel_arch]
+    }
+}
+
+#[cfg(test)]
+impl Target {
+    pub fn for_test(name: &str, triple: &str, arch: &str, kernel_arch: &str) -> Target {
+        Target {
+            name: name.into(),
+            triple: triple.into(),
+            arch: arch.into(),
+            kernel_arch: kernel_arch.into(),
+            kernel_config: PathBuf::from("config/kernel/test.config"),
+            contents: Vec::new(),
+            boot: Boot {
+                machine: "q35".into(),
+                cpu: None,
+                console: "ttyS0".into(),
+            },
+            kernel_config_digest: "0".repeat(64),
+        }
     }
 }
 
@@ -71,6 +138,9 @@ pub fn list(dir: &Path) -> Result<Vec<String>> {
     Ok(names)
 }
 
-pub fn load_all(dir: &Path) -> Result<Vec<Target>> {
-    list(dir)?.iter().map(|n| Target::load(dir, n)).collect()
+pub fn load_all(root: &Path) -> Result<Vec<Target>> {
+    list(&root.join("targets"))?
+        .iter()
+        .map(|n| Target::load(root, n))
+        .collect()
 }

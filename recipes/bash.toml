@@ -1,0 +1,28 @@
+# The shell. M2's exit criterion is a prompt from this binary, in QEMU.
+name = "bash"
+version = "5.3"
+kind = "target"
+
+[source]
+url = "https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz"
+sha256 = "0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba"
+
+[build]
+system = "configure"
+# bash's own build machinery assumes it is run in the source tree; the
+# out-of-tree path exists but is not the one upstream tests.
+out_of_tree = false
+configure = [
+  "--prefix=/usr",
+  "--host=$TRIPLE",
+  "--build=$BUILD_TRIPLE",
+  # bash's bundled malloc is older than glibc's and is not what a modern
+  # glibc target wants underneath it.
+  "--without-bash-malloc",
+  "--disable-nls",
+]
+install = ["DESTDIR=$OUT", "install"]
+
+[deps]
+build = ["gcc"]
+runtime = ["glibc"]

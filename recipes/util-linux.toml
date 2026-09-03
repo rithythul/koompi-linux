@@ -1,0 +1,47 @@
+# mount, agetty, dmesg: the parts of util-linux a boot floor actually uses.
+# Everything else is off, because the 150-recipe budget is spent on what
+# ships and this package alone would eat a tenth of it in programs nothing
+# calls.
+name = "util-linux"
+version = "2.42.3"
+kind = "target"
+
+[source]
+url = "https://cdn.kernel.org/pub/linux/utils/util-linux/v2.42/util-linux-2.42.3.tar.xz"
+sha256 = "66ac7c0e725278eb2b039e3104f2c91119341d941b41bac7a285c695f940bd57"
+
+[build]
+system = "configure"
+configure = [
+  "--prefix=/usr",
+  "--host=$TRIPLE",
+  "--build=$BUILD_TRIPLE",
+  "--disable-all-programs",
+  # util-linux defaults its "root" utilities to /bin, /sbin and /lib; in this
+  # core those are symlinks into /usr, and a package may not install there
+  "--bindir=/usr/bin",
+  "--sbindir=/usr/sbin",
+  "--libdir=/usr/lib",
+  "--enable-libblkid",
+  "--enable-libmount",
+  "--enable-libuuid",
+  "--enable-libsmartcols",
+  "--enable-mount",
+  "--enable-agetty",
+  "--enable-dmesg",
+  "--enable-switch_root",
+  "--enable-lsblk",
+  "--disable-nls",
+  "--disable-static",
+  "--disable-liblastlog2",
+  "--without-python",
+  "--without-systemd",
+  "--without-udev",
+  "--without-ncursesw",
+  "--without-ncurses",
+]
+install = ["DESTDIR=$OUT", "install"]
+
+[deps]
+build = ["gcc"]
+runtime = ["glibc"]

@@ -69,6 +69,22 @@ pub fn run(recipes: &BTreeMap<String, Recipe>, targets: &[Target]) -> Result<()>
         }
     }
 
+    for target in targets {
+        for name in &target.contents {
+            match recipes.get(name) {
+                None => problems.push(format!(
+                    "targets/{}.toml: contents names `{name}`, which has no recipe",
+                    target.name
+                )),
+                Some(r) if r.kind != crate::recipe::Kind::Target => problems.push(format!(
+                    "targets/{}.toml: contents names `{name}`, a host tool, which never enters an image",
+                    target.name
+                )),
+                Some(_) => {}
+            }
+        }
+    }
+
     if problems.is_empty() {
         println!(
             "lint: {} recipes, {} targets, clean",
@@ -89,12 +105,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn target(name: &str, triple: &str, arch: &str, karch: &str) -> Target {
-        Target {
-            name: name.into(),
-            triple: triple.into(),
-            arch: arch.into(),
-            kernel_arch: karch.into(),
-        }
+        Target::for_test(name, triple, arch, karch)
     }
 
     fn recipe_with(body: &str) -> Recipe {
@@ -103,7 +114,7 @@ mod tests {
             name: "r".into(),
             version: "1".into(),
             kind: Kind::Target,
-            source: Source { url: "u".into(), sha256: "0".repeat(64), strip: 1 },
+            source: Some(Source { url: "u".into(), sha256: "0".repeat(64), strip: 1 }),
             build: Build {
                 system: System::Make,
                 out_of_tree: false,

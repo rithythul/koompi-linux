@@ -1,0 +1,21 @@
+# The runtime half of the compiler: what our C++ links against, taken out of
+# the cross toolchain, which is a host tool and never enters an image itself.
+# The version tracks gcc's, because these files are gcc's.
+name = "gcc-libs"
+version = "15.3.0"
+kind = "target"
+
+[build]
+system = "shell"
+script = """
+install -d "$OUT/usr/lib"
+for soname in libgcc_s.so.1 libstdc++.so.6; do
+    found=$(find "$KB_GCC/$TRIPLE" -name "$soname" -print -quit)
+    [ -n "$found" ] || { echo "gcc installed no $soname"; exit 1; }
+    install -m 755 "$(readlink -f "$found")" "$OUT/usr/lib/$soname"
+done
+"""
+
+[deps]
+build = ["gcc"]
+runtime = ["glibc"]

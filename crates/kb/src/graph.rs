@@ -101,11 +101,11 @@ mod tests {
             name: name.into(),
             version: "0".into(),
             kind: Kind::Target,
-            source: Source {
+            source: Some(Source {
                 url: "u".into(),
                 sha256: "0".repeat(64),
                 strip: 1,
-            },
+            }),
             build: Build {
                 system: System::Make,
                 out_of_tree: false,

@@ -1,0 +1,38 @@
+# PID 1. spec.md decision 4: systemd is ~1.5M lines and shipping it makes the
+# read-it-in-a-day constraint false on day one.
+#
+# dinit's configure is its own script, not autoconf: it takes a platform
+# rather than a host triple, and reads CXX and CXX_FOR_BUILD to work out that
+# this is a cross build.
+name = "dinit"
+version = "0.22.1"
+kind = "target"
+
+[source]
+url = "https://github.com/davmac314/dinit/releases/download/v0.22.1/dinit-0.22.1.tar.xz"
+sha256 = "959b35c171452ecfbc09379b516517dadd675350eebc57ca54aebedda05d9adf"
+
+[build]
+system = "configure"
+# The generated mconfig is read by makefiles throughout the source tree.
+out_of_tree = false
+configure = [
+  "--prefix=/usr",
+  "--platform=Linux",
+  # `install -s` would run the build machine's strip over a foreign binary.
+  "--disable-strip",
+  # libcap is not in this core, and neither is utmp; a cross build cannot
+  # probe for either, so both are answered here rather than guessed.
+  "--disable-capabilities",
+  "--disable-utmpx",
+]
+install = ["install", "DESTDIR=$OUT"]
+
+[build.env]
+# How dinit's configure knows it is cross-building: a build compiler that is
+# not the host compiler.
+CXX_FOR_BUILD = "g++"
+
+[deps]
+build = ["gcc"]
+runtime = ["glibc", "gcc-libs"]
