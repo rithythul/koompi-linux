@@ -92,6 +92,7 @@ version = "1.3.1"
 [source]
 url = "https://zlib.net/zlib-1.3.1.tar.gz"
 sha256 = "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+license = "Zlib"                # SPDX; required wherever there is a [source]
 
 [build]
 system = "configure"          # configure | meson | cmake | make | kernel | shell
@@ -100,6 +101,9 @@ args = ["--shared"]
 [deps]
 build = ["gcc", "binutils"]
 runtime = []
+
+[check]                         # DESIGN.md C9: run by the image's selftest, on every target
+run = ["test -e /usr/lib/libz.so.1"]
 ```
 
 ```toml
@@ -107,13 +111,35 @@ runtime = []
 name = "x86_64-cloud"
 triple = "x86_64-koompi-linux-gnu"
 arch = "x86_64"
-kernel_config = "config/kernel/x86_64-cloud.config"
+kernel_config = ["core", "hardening", "virt", "x86_64-cloud"]   # DESIGN.md C4, merged in order
 firmware = "ovmf"
 contents = ["glibc", "linux", "dinit", "bash", "coreutils", "util-linux", "systemd-boot"]
+
+# DESIGN.md C5: policy that names an architecture lives here, never in a recipe
+cflags = ["-D_FORTIFY_SOURCE=3", "-fstack-clash-protection", "-fcf-protection=full"]
+ldflags = ["-Wl,-z,relro,-z,now"]
+setuid = []                     # DESIGN.md C6: the gate fails on anything not listed
 ```
 
 `system = "shell"` is the escape hatch from spec decision 2.
 Its use is counted in the Gate 0 report: if most recipes need it, the format is wrong and we should know that in week one.
+
+### Before Gate 0, because retrofitting costs more than doing
+
+[docs/DESIGN.md](docs/DESIGN.md) makes eleven calls about the running system.
+Most wait for the core to boot.
+These five are cheap now and expensive at 150 recipes, so they land inside M2 and M3 rather than after:
+
+| Call | What lands | Where |
+|---|---|---|
+| C10 determinism | the engine exports a fixed `SOURCE_DATE_EPOCH`, `TZ=UTC`, `LC_ALL=C.UTF-8`, `umask 022` and `-ffile-prefix-map=$SRC=/src` in every build script header | M2, engine |
+| C5 hardening | `cflags` and `ldflags` in the target file, exported before recipe env; `check-provenance` gains PIE, RELRO, BIND_NOW, NX and no-RWX checks | M2 target file, M3 gate |
+| C6 zero setuid | util-linux gets `--disable-makeinstall-setuid`; the image gate fails on any setuid or setgid file outside the target's allowlist, which is empty | M2 recipe, M3 gate |
+| licence | `license = "<SPDX>"` required by lint wherever there is a `[source]`; recipes with no source declare the project's licence once Rithy picks one | M2, lint |
+| C9 checks | an optional `[check]` list per recipe, concatenated by `kb image` into the selftest that boot-services already runs | M2, engine |
+
+One M2 finding from writing the design: the selftest script calls `grep`, and `grep` is in no target's contents.
+Either bash's own `[[ ]]` and `read` replace the two calls, or `grep` becomes the fourteenth recipe; the former is smaller.
 
 ## Attempt one's four open blockers, under this shape
 
@@ -172,8 +198,15 @@ Only QEMU counts.
 UKI, `systemd-boot` built alone from the systemd tree, the ESP write protocol from the post-mortem — hidden staging name, fsync, byte-compare read-back, rename, fsync the directory, retain 3, never collect before a good boot.
 `bless-boot` as a dinit oneshot.
 
-**Exit:** `x86_64-cloud` boots under OVMF from the ESP, and an entry rigged to fail rolls back unattended across three tries.
-Rollback is on the [cut list](#cut-list); UEFI boot is not.
+This is also where the root stops being an initramfs and becomes the production shape from DESIGN.md:
+
+- **C3**: `kb image` writes the root as erofs with a fixed timestamp, and `veritysetup` produces the hash tree; both tools are added to the seed, with `sbsign` for the UKI
+- **C2**: the UKI's command line carries `dm-mod.create=` with the root hash, and the kernel opens the verity root itself; no initramfs, no `/init` before dinit
+- **C4**: `config/kernel/` becomes `core`, `hardening`, `virt` and per-target fragments, listed in the target file and merged in order; the "every line survives `olddefconfig`" check runs over all of them
+- **C1**: `early-fs` mounts the `/etc` overlay and the `/var` partition; the state partition is created on first boot
+
+**Exit:** `x86_64-cloud` boots under OVMF from the ESP into a verity root, and an entry rigged to fail rolls back unattended across three tries.
+Rollback is on the [cut list](#cut-list); UEFI boot and the verity root are not.
 
 ### M4 — `aarch64` headless (D18–D20)
 
@@ -221,9 +254,29 @@ Named now, so cutting is a decision and not a quiet slip:
 2. `zstd`-compressed images — uncompressed boots the same
 3. `kb report` as a subcommand — a script produces the same numbers
 
+## After Gate 0: the desktop is target three, and the product
+
+Not dated, because dating it before Gate 0 is the mistake attempts two and three made.
+Shaped, because the budgets are only budgets if what they hold is known, and because Rithy has said who this is for: students, enterprises and government, on their PCs.
+
+**The cloud target is small.** DESIGN.md counts it at 23 recipes: the 13 that exist, then `systemd-boot`, `e2fsprogs`, `dhcpcd`, `iproute2`, `openssh` without OpenSSL, `chrony`, `grep`, `sed`, `findutils`, and one Rust binary, `koompi`.
+So Gate 0 measures a rate and proves molding; it does not test throughput at the scale that killed attempt one.
+
+**The desktop is where the bet is decided**, and it is also what ships, so it comes straight after Gate 0 in this order, each step gated by a boot on a reference machine rather than in QEMU:
+
+1. **Hardware boot** — modules, `kmod`, firmware, microcode, the small initramfs, LUKS on the state tier (D1, D2). Gate: a reference laptop boots to a shell from its own disk.
+2. **Display** — `libudev` chosen by measurement (D3), Mesa, libinput, Wayland, the font stack. Gate: a bare compositor draws on three reference machines.
+3. **Session** — KOOMPI Desktop, Qt 6, PAM, the greeter, Flatpak, Khmer fonts, input and the Pango patch (D4, D5, D6). Gate: a student logs in, types Khmer, opens a browser from Flathub.
+4. **Ship** — the installer target, `koompi update` end to end with rollback, policy overlay and channels (D7, D9). Gate: install from USB, update, break the update, roll back, on all three machines.
+5. **Editions** — `student`, `enterprise`, `government` as compositions (D10). Gate: three images from one desktop target, zero forked recipes, by `git log` over `recipes/`.
+
+Step 2 is the throughput test: it is the first time recipes arrive by the dozen, and the M5 numbers, first-pass gate success and escape-hatch rate, are what predict whether it clears.
+The desktop layer's budget is **300 recipes above the core**, held the way the 150 is.
+
 ## Not in this plan
 
-Self-hosting · the desktop · signing, keys and release infrastructure · reproducibility as a merge gate · any package manager on the device · any mutable-state story · targets three and beyond.
+Self-hosting · the desktop · signing, keys and release infrastructure · reproducibility as a merge gate · any package manager on the device · targets three and beyond.
+The mutable-state story is no longer open: it is DESIGN.md C1, and it lands in M3.
 
 ## How this plan dies
 

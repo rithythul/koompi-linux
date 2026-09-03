@@ -48,7 +48,7 @@ Which two targets go first is a spec decision. The requirement that there be two
 ## What this is not
 
 - Not a fork, respin, or rebadge of any existing distribution
-- Not desktop-first — the desktop starts after the core boots on two dissimilar targets
+- Not desktop-first in *sequence* — the desktop starts after the core boots on two dissimilar targets. It is desktop-first in *product*: see below
 - Not a package manager wrapped around somebody else's repository
 - Not a research project. It has to boot.
 
@@ -64,7 +64,7 @@ Any of the three, and the answer is to stop and say so — not to restart at a d
 
 ## Open, and owned by Rithy rather than by engineering
 
-- Who this is for, in one sentence
+- ~~Who this is for, in one sentence~~ Answered 2026-09-03: general users on their PCs — students, enterprises and government, Cambodia first. The desktop is the product; cloud and headless are the proof of molding. [docs/DESIGN.md](docs/DESIGN.md) designs it.
 - Whether this is a company product or a personal project
 - Signing key custody
 

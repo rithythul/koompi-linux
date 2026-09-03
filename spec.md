@@ -48,6 +48,24 @@ Bit-identical output is **not** a merge gate before Gate 0 clears.
 Making it one now would spend the exact resource — throughput — that the post-mortem identifies as what killed attempt one.
 It becomes a gate once the core boots.
 
+The engine is deterministic from now regardless: a fixed `SOURCE_DATE_EPOCH`, `TZ`, locale, umask and path prefix map in every build ([DESIGN.md C10](docs/DESIGN.md)).
+That costs five lines today and is the part that cannot be retrofitted cheaply.
+
+### The running system
+
+[docs/DESIGN.md](docs/DESIGN.md) is the design of the system as it runs, written on day two against the eight decisions and reopening none of them.
+Its calls are engineering calls unless marked as Rithy's, and the ones that must land before Gate 0 are sequenced in [plan.md](plan.md).
+In short:
+
+- **Three tiers of state** (C1): `/usr` and the root are a read-only erofs image on dm-verity; `/etc` is the image's defaults with the operator's changes as an overlay under `/var`; `/var` and `/home` are the only persistent state. This answers "the on-device story for anything mutable", which the first version of this spec left open.
+- **No initramfs on virtual targets** (C2): the kernel opens the verity root itself from a command line baked into the signed UKI, so M2's direct kernel boot is the production shape.
+- **Kernel config is shared fragments** (C4), with hardening as one fragment every target inherits, and module signing on from the first build.
+- **Hardening flags are target policy** (C5), exported by the engine, and `check-provenance` reads PIE, RELRO, BIND_NOW and NX back from every binary.
+- **Zero setuid** (C6), by an allowlist that is empty on both Gate 0 targets.
+- **No udev, PAM, D-Bus or TLS library in the core** (C7). Each enters with the layer that needs it, if one does.
+- **A recipe declares its own check** (C9), and the image's selftest runs it, so "green for both targets" means it ran on both.
+- **Every `[source]` carries an SPDX licence**, so an image can ship its bill of materials.
+
 ### Everything KOOMPI writes is Rust
 
 Carried from attempt three unchanged. The recipe engine, the image builder and the deploy tool are Rust with no external crates unless a dependency-register row justifies one.
@@ -80,10 +98,10 @@ Criteria 3 is the one that matters. One and two without three is a distro; all t
 
 ## What this spec deliberately does not settle
 
-- the desktop, in any form — it starts after Gate 0
-- signing, key custody and release infrastructure — blocked on Rithy, and not needed to boot
+- the desktop — it starts after Gate 0, and it is the product; its design is [docs/DESIGN.md](docs/DESIGN.md) D1–D11, with its own budget of 300 recipes above the core's 150
+- signing, key custody and release infrastructure — blocked on Rithy, and not needed to boot; where each key is *used* is fixed by DESIGN.md C4 and C8
 - whether targets beyond the first two get first-class support
-- the on-device story for anything mutable
+- the items listed as Rithy's at the end of [docs/DESIGN.md](docs/DESIGN.md): transport privacy for image downloads, the size and boot-time budgets, who gets a shell from a cloud serial console, and the project's own licence
 
 ## What would make this spec wrong
 
