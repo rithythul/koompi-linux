@@ -31,6 +31,15 @@ const PRUNE_DIRS: &[&str] = &[
 ];
 const PRUNE_SUFFIXES: &[&str] = &[".a", ".la", ".o", ".pc"];
 
+/// What the manifest records for a file kb image wrote itself.
+pub const GENERATED: &str = "kb-image";
+/// Where the selftest reads the recipes' own checks from.
+const CHECKS: &str = "usr/libexec/koompi/checks";
+/// The bill of materials: every package in the image, its version, licence
+/// and upstream. Shipped inside the image, because a claim of provenance a
+/// ministry's engineer cannot read off the machine is not one.
+const BOM: &str = "usr/share/koompi/bom";
+
 pub struct Image {
     pub dir: PathBuf,
     pub rootfs: PathBuf,
@@ -100,6 +109,11 @@ pub fn assemble(
 
     prune(&image.rootfs, &mut manifest)?;
     strip(engine, &image.rootfs, &ids, target)?;
+    write_checks(&image.rootfs, recipes, &order)?;
+    manifest.insert(CHECKS.to_string(), GENERATED.to_string());
+    write_bom(&image.rootfs, recipes, &order)?;
+    manifest.insert(BOM.to_string(), GENERATED.to_string());
+    refuse_setuid(&image.rootfs, &manifest, target)?;
 
     // The kernel is what boots the userland, not part of it: carrying it
     // inside its own initramfs would cost that many megabytes of guest RAM.
@@ -200,6 +214,63 @@ fn prune(rootfs: &Path, manifest: &mut BTreeMap<String, String>) -> Result<()> {
         manifest.remove(&path);
     }
     Ok(())
+}
+
+/// DESIGN.md C9: one line per check, `recipe<tab>command`, in package order,
+/// for the selftest in boot-services to run.
+fn write_checks(rootfs: &Path, recipes: &BTreeMap<String, Recipe>, order: &[String]) -> Result<()> {
+    let mut text = String::new();
+    for name in order {
+        for command in &recipes[name].checks {
+            text.push_str(&format!("{name}\t{command}\n"));
+        }
+    }
+    let path = rootfs.join(CHECKS);
+    let dir = path.parent().expect("a file has a directory");
+    fs::create_dir_all(dir)?;
+    fs::write(&path, text)?;
+    Ok(())
+}
+
+fn write_bom(rootfs: &Path, recipes: &BTreeMap<String, Recipe>, order: &[String]) -> Result<()> {
+    let mut text = String::from("name\tversion\tlicense\tsource\n");
+    for name in order {
+        let r = &recipes[name];
+        let (license, url) = match &r.source {
+            Some(s) => (s.license.as_str(), s.url.as_str()),
+            None => ("", ""),
+        };
+        text.push_str(&format!("{name}\t{}\t{license}\t{url}\n", r.version));
+    }
+    let path = rootfs.join(BOM);
+    fs::create_dir_all(path.parent().expect("a file has a directory"))?;
+    fs::write(path, text)?;
+    Ok(())
+}
+
+/// DESIGN.md C6: setuid and setgid by allowlist, and the allowlist is empty.
+fn refuse_setuid(rootfs: &Path, manifest: &BTreeMap<String, String>, target: &Target) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut found = Vec::new();
+    for path in manifest.keys() {
+        let meta = rootfs.join(path).symlink_metadata()?;
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+        let mode = meta.permissions().mode();
+        if mode & 0o6000 != 0 && !target.setuid.iter().any(|p| p.trim_start_matches('/') == path) {
+            found.push(format!("  /{path} ({:o}) from {}", mode & 0o7777, manifest[path]));
+        }
+    }
+    if found.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "{} file(s) are setuid or setgid and not in targets/{}.toml `setuid`:\n{}",
+        found.len(),
+        target.name,
+        found.join("\n")
+    )
 }
 
 /// Debug information is most of a binary and names every build path in it;
@@ -332,11 +403,13 @@ mod tests {
                 install: None,
                 env: vec![],
                 script: Some(String::new()),
+                remove: vec![],
             },
             deps: Deps {
                 build: vec!["gcc".into()],
                 runtime: runtime.iter().map(|s| s.to_string()).collect(),
             },
+            checks: vec![],
             path: PathBuf::from(format!("recipes/{name}.toml")),
             raw: Vec::new(),
         }

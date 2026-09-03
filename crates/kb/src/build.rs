@@ -19,6 +19,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+/// DESIGN.md C10: one project-wide epoch, so no recipe carries a date.
+/// 2026-09-01T00:00:00Z, the day spec.md was settled.
+pub const SOURCE_DATE_EPOCH: u64 = 1788220800;
+
 /// The target's kernel config fragment, mounted read-only into every build.
 pub const C_KERNEL_CONFIG: &str = "/kb/kernel.config";
 const KERNEL_CONFIG_VAR_NAME: &str = "KERNEL_CONFIG";
@@ -356,8 +360,14 @@ pub fn script(
         s.push_str(&format!("export ARCH=\"{}\"\n", target.arch));
         s.push_str(&format!("export KARCH=\"{}\"\n", target.kernel_arch));
         s.push_str(&format!("export JOBS={jobs}\n"));
+        // an empty $SRC for a recipe with no upstream, so a script that cds
+        // into it fails the same way whatever the recipe looks like
+        s.push_str(&format!("export SRC={}/src\n", store::C_WORK));
         s.push_str(&format!("export {KERNEL_CONFIG_VAR_NAME}={C_KERNEL_CONFIG}\n"));
         s.push_str("export BUILD_TRIPLE=\"$(gcc -dumpmachine)\"\n");
+        // DESIGN.md C10: what a deterministic build needs from its environment
+        s.push_str(&format!("export SOURCE_DATE_EPOCH={SOURCE_DATE_EPOCH}\n"));
+        s.push_str("export TZ=UTC\nexport LC_ALL=C.UTF-8\numask 022\n");
         if !path_extra.is_empty() {
             s.push_str(&format!("export PATH=\"{}:$PATH\"\n", path_extra.join(":")));
         }
@@ -384,6 +394,17 @@ pub fn script(
         //
         // LD is deliberately absent: builds are expected to link through the
         // compiler driver, and setting LD confuses libtool more than it helps.
+        // C10: no build path reaches a binary; C5: the target's hardening
+        // policy. Every build sees them by name, because a host tool can
+        // still emit target code (gcc builds libstdc++); only a target build
+        // gets them as its CFLAGS. A recipe that cannot take a flag strips it.
+        let cflags = format!(
+            "-ffile-prefix-map=$SRC=/src -ffile-prefix-map={}=/work {}",
+            store::C_WORK,
+            target.cflags.join(" ")
+        );
+        s.push_str(&format!("export TARGET_CFLAGS=\"{}\"\n", cflags.trim_end()));
+        s.push_str(&format!("export TARGET_LDFLAGS=\"{}\"\n", target.ldflags.join(" ")));
         if recipe.kind == Kind::Target {
             for tool in ["CC=gcc", "CXX=g++", "AR=ar", "RANLIB=ranlib", "NM=nm",
                          "STRIP=strip", "OBJCOPY=objcopy", "OBJDUMP=objdump",
@@ -391,14 +412,15 @@ pub fn script(
                 let (name, bin) = tool.split_once('=').expect("literal has an =");
                 s.push_str(&format!("export {name}=\"$TRIPLE-{bin}\"\n"));
             }
+            s.push_str("export CFLAGS=\"$TARGET_CFLAGS\"\n");
+            s.push_str("export CXXFLAGS=\"$TARGET_CFLAGS\"\n");
+            s.push_str("export LDFLAGS=\"$TARGET_LDFLAGS\"\n");
         }
         for (k, v) in &recipe.build.env {
             s.push_str(&format!("export {k}=\"{v}\"\n"));
         }
 
-        // A recipe with no upstream still gets an empty $SRC, so a script
-        // that cds into it fails the same way whatever the recipe looks like.
-        s.push_str(&format!("\nmkdir -p {}/src\nexport SRC={}/src\n", store::C_WORK, store::C_WORK));
+        s.push_str(&format!("\nmkdir -p {}/src\n", store::C_WORK));
         if let (Some(tarball), Some(source)) = (tarball, &recipe.source) {
             s.push_str(&format!(
                 // --no-same-owner: tar runs as root in the container and would
@@ -437,6 +459,9 @@ pub fn script(
                 s.push_str(&make_step("make -j\"$JOBS\"", &recipe.build.make, &["all".into()]));
                 s.push_str(&make_step("make", &recipe.build.install, &["install".into()]));
             }
+        }
+        for p in &recipe.build.remove {
+            s.push_str(&format!("rm \"$OUT/{p}\"\n"));
         }
         s
     }
@@ -542,6 +567,7 @@ mod tests {
             source: Some(Source {
                 url: "https://example.invalid/pkg-1.0.tar.xz".into(),
                 sha256: "0".repeat(64),
+                license: "MIT".into(),
                 strip: 1,
             }),
             build: Build {
@@ -552,8 +578,10 @@ mod tests {
                 install: install.map(|v| v.iter().map(|s| s.to_string()).collect()),
                 env: vec![("ARCH".into(), "$KARCH".into())],
                 script: None,
+                remove: vec![],
             },
             deps: Deps { build: vec![], runtime: vec![] },
+            checks: vec![],
             path: "recipes/pkg.toml".into(),
             raw: Vec::new(),
         }
@@ -678,6 +706,47 @@ mod tests {
         r.kind = Kind::HostTool;
         let s = render(&r, &[]);
         assert!(!s.contains("export CC="), "a host tool was cross-configured:\n{s}");
+        assert!(!s.contains("export CFLAGS="), "target policy reached a host tool:\n{s}");
+    }
+
+    #[test]
+    fn a_target_build_gets_the_targets_hardening_and_no_build_path() {
+        let s = render(&recipe(System::Configure, None, None), &[]);
+        assert!(
+            s.contains("export TARGET_CFLAGS=\"-ffile-prefix-map=$SRC=/src -ffile-prefix-map=/kb/work=/work -D_FORTIFY_SOURCE=3\""),
+            "{s}"
+        );
+        assert!(s.contains("export TARGET_LDFLAGS=\"-Wl,-z,relro,-z,now\""), "{s}");
+        assert!(s.contains("export CFLAGS=\"$TARGET_CFLAGS\""), "{s}");
+        assert!(s.contains("export LDFLAGS=\"$TARGET_LDFLAGS\""), "{s}");
+        // $SRC must already be set when the flags mention it
+        assert!(s.find("export SRC=").unwrap() < s.find("export TARGET_CFLAGS=").unwrap(), "{s}");
+    }
+
+    #[test]
+    fn a_host_tool_sees_the_targets_flags_by_name_only() {
+        let mut r = recipe(System::Configure, None, None);
+        r.kind = Kind::HostTool;
+        let s = render(&r, &[]);
+        assert!(s.contains("export TARGET_CFLAGS=\""), "{s}");
+        assert!(!s.contains("export CFLAGS="), "a host tool was handed target CFLAGS:\n{s}");
+    }
+
+    #[test]
+    fn what_a_recipe_removes_goes_after_install_and_must_exist() {
+        let mut r = recipe(System::Configure, None, None);
+        r.build.remove = vec!["usr/bin/bashbug".into()];
+        let s = render(&r, &[]);
+        assert!(s.contains("rm \"$OUT/usr/bin/bashbug\"\n"), "{s}");
+        assert!(s.find("make \"install\"").unwrap() < s.find("rm \"$OUT/usr/bin/bashbug\"").unwrap(), "{s}");
+    }
+
+    #[test]
+    fn every_build_is_pinned_to_one_epoch_zone_locale_and_umask() {
+        let s = render(&recipe(System::Configure, None, None), &[]);
+        for line in ["export SOURCE_DATE_EPOCH=1788220800", "export TZ=UTC", "export LC_ALL=C.UTF-8", "umask 022"] {
+            assert!(s.contains(line), "missing {line}:\n{s}");
+        }
     }
 
     #[test]

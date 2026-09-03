@@ -79,6 +79,7 @@ kind = "target"
 [source]
 url = "file://$work/upstream/hello-1.0.tar.gz"
 sha256 = "$1"
+license = "MIT"
 
 [build]
 system = "make"
@@ -184,6 +185,15 @@ R
 out=$("$kb" build layout --target testtarget 2>&1 || true)
 contains "names the rule" "$out" 'no [source] must use system = "shell"'
 rm "$repo/recipes/layout.toml"
+
+echo "11. what a recipe removes must be under \$OUT, and must exist"
+write_recipe "$sum" 'remove = ["../escape"]'
+out=$("$kb" build hello --target testtarget 2>&1 || true)
+contains "an escaping path is refused" "$out" "not a plain path relative to \$OUT"
+write_recipe "$sum" 'remove = ["usr/bin/never-installed"]'
+out=$("$kb" build hello --target testtarget 2>&1 || true)
+contains "a stale entry fails the build" "$out" "cannot remove"
+write_recipe "$sum" ""
 
 echo
 if [ "$fails" -eq 0 ]; then

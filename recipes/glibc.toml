@@ -7,6 +7,7 @@ kind = "target"
 [source]
 url = "https://ftp.gnu.org/gnu/glibc/glibc-2.44.tar.xz"
 sha256 = "37f600f2bef3c5e8300147059568b2a2e40a7ad6ccc65ce942556d49429cc667"
+license = "LGPL-2.1-or-later"
 
 [build]
 system = "configure"
@@ -20,6 +21,15 @@ configure = [
   "--disable-nscd",
   "--disable-werror",
   "libc_cv_slibdir=/usr/lib",
+  # the target's fortify, bind-now and CET policy, the way glibc takes it:
+  # through configure, because a libc built with them only in CFLAGS does not
+  # build. --enable-cet is a no-op outside the x86 sysdeps
+  "--enable-fortify-source=3",
+  "--enable-bind-now",
+  "--enable-cet",
+  # the fortify-3 probe is a link test; nothing links before libc exists.
+  # gcc 15 has __builtin_dynamic_object_size, which is all it probes for
+  "libc_cv_supported_fortify_source=3",
 ]
 # Installed with a prefix of /usr into a staging root, so the store entry is a
 # sysroot fragment rather than something that has to be relocated.
@@ -29,5 +39,12 @@ configure = [
 # symlink in this core.
 install = ["DESTDIR=$OUT", "rootsbindir=/usr/sbin", "install"]
 
+[build.env]
+CFLAGS = "${CFLAGS/-D_FORTIFY_SOURCE=3/}"
+LDFLAGS = "${LDFLAGS/,-z,now/}"
+
 [deps]
 build = ["binutils", "gcc-bootstrap", "linux-headers"]
+
+[check]
+run = ["test -e /usr/lib/libc.so.6", "test -x /usr/bin/ldd"]

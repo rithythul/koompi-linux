@@ -7,6 +7,7 @@ kind = "target"
 [source]
 url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.49.tar.xz"
 sha256 = "ae826f33111fea6f1d279dde7299d7463c8dfd204aeb75a8fb5432bc60a28191"
+license = "GPL-2.0-only WITH Linux-syscall-note"
 
 [build]
 system = "shell"
@@ -31,8 +32,14 @@ install -Dm644 "$(kmake -s image_name)" "$OUT/boot/vmlinuz"
 install -Dm644 .config "$OUT/boot/config"
 install -Dm644 System.map "$OUT/boot/System.map"
 kmake INSTALL_MOD_PATH="$OUT/usr" INSTALL_MOD_STRIP=1 modules_install
+# modules_install leaves a symlink back to the build tree, for building
+# out-of-tree modules; nothing on the device does that
+rm -f "$OUT"/usr/lib/modules/*/build
 """
 
 [deps]
 build = ["binutils", "gcc"]
 runtime = []
+
+[check]
+run = ["test -d /usr/lib/modules/$(uname -r)"]

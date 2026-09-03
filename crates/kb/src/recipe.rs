@@ -36,6 +36,9 @@ pub enum System {
 pub struct Source {
     pub url: String,
     pub sha256: String,
+    /// SPDX. What an image's bill of materials is made of, and the one
+    /// field that is trivial at 13 recipes and painful at 150.
+    pub license: String,
     /// Leading path components to strip when unpacking.
     pub strip: u32,
 }
@@ -67,6 +70,11 @@ pub struct Build {
     pub env: Vec<(String, String)>,
     /// Only for `system = "shell"`.
     pub script: Option<String>,
+    /// Paths under $OUT the install step creates and the image must not
+    /// carry: a bug-report script with CFLAGS baked in, a Makefile for
+    /// building against the package. Removed with a plain `rm` after
+    /// install, so a stale entry fails the build instead of lingering.
+    pub remove: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -90,6 +98,9 @@ pub struct Recipe {
     pub source: Option<Source>,
     pub build: Build,
     pub deps: Deps,
+    /// DESIGN.md C9: commands the image's selftest runs for this recipe,
+    /// under QEMU, on every target. Green means they ran, not that it built.
+    pub checks: Vec<String>,
     pub path: PathBuf,
     /// The file as it was on disk, hashed into the build id.
     pub raw: Vec<u8>,
@@ -124,13 +135,17 @@ impl Recipe {
                 if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
                     bail!("{origin}: sha256 must be 64 hex characters");
                 }
+                let license = s.str_req("license")?.trim().to_string();
+                if license.is_empty() {
+                    bail!("{origin}: license must be an SPDX expression");
+                }
                 let strip = match s.int_opt("strip")? {
                     Some(n) if n < 0 => bail!("{origin}: strip cannot be negative"),
                     Some(n) => n as u32,
                     None => 1,
                 };
                 s.finish()?;
-                Some(Source { url, sha256, strip })
+                Some(Source { url, sha256, license, strip })
             }
         };
 
@@ -149,6 +164,13 @@ impl Recipe {
             let make = b.strs_opt("make")?;
             let install = b.strs_opt("install")?;
             let script = b.str_opt("script")?.map(str::to_string);
+            let remove = b.strs("remove")?;
+            for p in &remove {
+                let escapes = p.starts_with('/') || p.split('/').any(|c| c.is_empty() || c == "..");
+                if escapes {
+                    bail!("{origin}: remove = `{p}` is not a plain path relative to $OUT");
+                }
+            }
             let env = match b.table_opt("env")? {
                 Some(mut e) => {
                     let pairs = e.pairs()?;
@@ -190,6 +212,7 @@ impl Recipe {
                 install,
                 env,
                 script,
+                remove,
             }
         };
 
@@ -206,6 +229,21 @@ impl Recipe {
             },
         };
 
+        let checks = match r.table_opt("check")? {
+            Some(mut c) => {
+                let run = c.strs("run")?;
+                c.finish()?;
+                if run.is_empty() {
+                    bail!("{origin}: a [check] table needs a non-empty `run` list");
+                }
+                if let Some(bad) = run.iter().find(|c| c.contains('\t') || c.contains('\n')) {
+                    bail!("{origin}: check `{bad}` contains a tab or newline; one command per entry");
+                }
+                run
+            }
+            None => Vec::new(),
+        };
+
         r.finish()?;
 
         // Recipe arguments are emitted into a bash script inside double
@@ -216,6 +254,7 @@ impl Recipe {
             .iter()
             .chain(build.make.iter().flatten())
             .chain(build.install.iter().flatten())
+            .chain(build.remove.iter())
             .chain(build.env.iter().map(|(_, v)| v))
         {
             if let Some(bad) = arg.chars().find(|c| matches!(c, '"' | '`')) {
@@ -237,6 +276,7 @@ impl Recipe {
             source,
             build,
             deps,
+            checks,
             path: path.to_path_buf(),
             raw,
         })

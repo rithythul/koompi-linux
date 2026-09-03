@@ -97,6 +97,7 @@ license = "Zlib"                # SPDX; required wherever there is a [source]
 [build]
 system = "configure"          # configure | meson | cmake | make | kernel | shell
 args = ["--shared"]
+remove = []                   # what install creates and the image must not carry
 
 [deps]
 build = ["gcc", "binutils"]
@@ -116,7 +117,7 @@ firmware = "ovmf"
 contents = ["glibc", "linux", "dinit", "bash", "coreutils", "util-linux", "systemd-boot"]
 
 # DESIGN.md C5: policy that names an architecture lives here, never in a recipe
-cflags = ["-D_FORTIFY_SOURCE=3", "-fstack-clash-protection", "-fcf-protection=full"]
+cflags = ["-O2", "-D_FORTIFY_SOURCE=3", "-fstack-clash-protection", "-fcf-protection=full"]
 ldflags = ["-Wl,-z,relro,-z,now"]
 setuid = []                     # DESIGN.md C6: the gate fails on anything not listed
 ```
@@ -192,6 +193,34 @@ That needs a `filesystem` recipe with no upstream source, which the recipe forma
 
 The same fact makes one kind of test worthless: on an `x86_64` host, `/lib64/ld-linux-x86-64.so.2` is the *host's* loader, so a binary we cross-built will run there against the host's glibc and look fine.
 Only QEMU counts.
+
+**Done, D2.** `kb boot x86_64-cloud --smoke` reaches a `bash-5.3#` prompt with dinit as PID 1 and passes the selftest.
+`kb check-provenance x86_64-cloud` is clean: 538 files, every one traced to a build, no build path in any of them, no dangling symlink, no setuid or setgid file.
+Thirteen recipes, two targets, zero forked recipes, `kb lint` clean.
+The image from an empty store is about 31 minutes on 8 cores: binutils 60s, gcc-bootstrap 393s, linux-headers 10s, glibc 161s, gcc 571s, bash 28s, coreutils 48s, util-linux 22s, dinit 10s, linux 481s.
+31 MiB of uncompressed initramfs, nine packages.
+`aarch64-headless` builds the same image from the same recipes and passes provenance, with BTI, PAC and GCS on every binary checked; booting it waits on `qemu-system-aarch64`, which is M4's job.
+That image is 1952 files and 124 MiB, four times x86_64's, because the arm64 defconfig builds 1423 modules; the kernel fragments in M3 (C4) are where that gets cut, not the recipe.
+
+All five calls from the table above landed inside M2, none skipped.
+What each one cost, and what it found:
+
+- **C10.** The prefix map cleared the last 47 provenance problems, every one a `__FILE__` in an assertion that `strip` does not touch, plus the kernel's `modules/*/build` symlink into the work tree.
+  Two more surfaced only because the gate ran again: `libstdc++` had no map, because gcc is a host tool and its target libraries took no flags; and bash installs `bashbug` and `usr/lib/bash/Makefile.inc` with `CFLAGS` baked in.
+  So the engine exports `TARGET_CFLAGS` and `TARGET_LDFLAGS` to every build, the gcc recipe passes them as `*_FOR_TARGET`, and a recipe may list `remove = [...]` for what its install step creates and the image must not carry.
+- **C5.** glibc takes fortify, bind-now and CET through configure, not `CFLAGS`, and its fortify-3 probe is a link test, which cannot pass before a libc exists; the recipe seeds the cache variable.
+  An exported `CFLAGS` silences autoconf's default `-O2 -g`, so `-O2` lives in the target file, where it was implicit before.
+  Verified with `readelf` on bash, mount and libstdc++: PIE, RELRO, BIND_NOW, non-executable stack, IBT and SHSTK.
+  The hardening pass in `check-provenance` stays in M3 as planned.
+- **C6.** The image before this gate shipped `mount` and `umount` setuid, so the gate is not hypothetical.
+- **Licence.** All ten sourced recipes carry an SPDX expression and the image writes a bill of materials; the three sourceless ones wait on the project licence.
+- **C9.** Eleven checks from six recipes run in the selftest under QEMU; the `grep` finding was closed with bash builtins, no fourteenth recipe.
+
+Defects found in M2, all fixed, all in git:
+gcc-bootstrap sat ahead of gcc on `PATH` through the closure, so every target package was compiled by the headerless bootstrap compiler, and it was coreutils that noticed, not the toolchain test; declared dependencies now come first.
+dinit needs `/dev/null` in the initramfs before devtmpfs is mounted, or no service can open its standard descriptors.
+`/proc/1/comm` says `init` for a symlinked dinit, so the PID 1 check reads `/proc/1/exe`.
+And the M1 pattern again: dinit compiles a build-machine helper with the seed's `g++` and the *target's* `CXXFLAGS`, which x86_64 accepted and aarch64 refused at `-mbranch-protection`; the recipe pins `CXXFLAGS_FOR_BUILD`.
 
 ### M3 — the boot chain (D13–D17)
 

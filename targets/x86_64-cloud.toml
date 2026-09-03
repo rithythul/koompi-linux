@@ -6,6 +6,15 @@ kernel_arch = "x86"
 kernel_config = "config/kernel/x86_64-cloud.config"
 contents = ["boot-services", "linux"]
 
+# DESIGN.md C5: hardening is policy, and policy that names an architecture
+# lives here. Exported for every target recipe; a recipe strips what it
+# cannot take. -O2 is here because an exported CFLAGS silences autoconf's
+# default of -O2 -g, and glibc refuses to build unoptimised.
+cflags = ["-O2", "-D_FORTIFY_SOURCE=3", "-fstack-clash-protection", "-fcf-protection=full"]
+ldflags = ["-Wl,-z,relro,-z,now"]
+# DESIGN.md C6: nothing in this target may be setuid or setgid
+setuid = []
+
 [boot]
 machine = "q35"
 cpu = "max"

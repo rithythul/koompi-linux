@@ -12,6 +12,7 @@ kind = "target"
 [source]
 url = "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.18.49.tar.xz"
 sha256 = "ae826f33111fea6f1d279dde7299d7463c8dfd204aeb75a8fb5432bc60a28191"
+license = "GPL-2.0-only WITH Linux-syscall-note"
 
 [build]
 system = "make"

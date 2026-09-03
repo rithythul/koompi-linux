@@ -114,7 +114,7 @@ mod tests {
             name: "r".into(),
             version: "1".into(),
             kind: Kind::Target,
-            source: Some(Source { url: "u".into(), sha256: "0".repeat(64), strip: 1 }),
+            source: Some(Source { url: "u".into(), sha256: "0".repeat(64), license: "MIT".into(), strip: 1 }),
             build: Build {
                 system: System::Make,
                 out_of_tree: false,
@@ -123,8 +123,10 @@ mod tests {
                 install: None,
                 env: vec![],
                 script: None,
+                remove: vec![],
             },
             deps: Deps { build: vec![], runtime: vec![] },
+            checks: vec![],
             path: PathBuf::from("recipes/r.toml"),
             raw: body.as_bytes().to_vec(),
         }

@@ -84,13 +84,13 @@ check() {
 }
 
 echo "SELFTEST kernel $(uname -srm)"
-check "coreutils runs"    ls /usr/bin
-check "bash runs"         bash -c 'test $((1 + 1)) = 2'
 check "proc is mounted"   test -d /proc/1
 check "dev is devtmpfs"   test -c /dev/null
-check "util-linux runs"   dmesg -t
-check "dinit is pid 1"    test "$(readlink /proc/1/exe)" = /usr/bin/dinit
-check "dinit answers"     dinitctl status console
+
+# DESIGN.md C9: every recipe's own checks, one per line, written by kb image
+while IFS=$'\t' read -r recipe command; do
+    check "$recipe: $command" bash -c "$command"
+done < /usr/libexec/koompi/checks
 
 if [ "$fails" -eq 0 ]; then
     echo "SELFTEST PASSED"

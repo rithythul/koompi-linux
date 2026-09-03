@@ -9,6 +9,7 @@ kind = "target"
 [source]
 url = "https://cdn.kernel.org/pub/linux/utils/util-linux/v2.42/util-linux-2.42.3.tar.xz"
 sha256 = "66ac7c0e725278eb2b039e3104f2c91119341d941b41bac7a285c695f940bd57"
+license = "GPL-2.0-or-later"
 
 [build]
 system = "configure"
@@ -34,6 +35,9 @@ configure = [
   "--disable-nls",
   "--disable-static",
   "--disable-liblastlog2",
+  # DESIGN.md C6: mount would be installed setuid; the core has nobody to
+  # run it but root
+  "--disable-makeinstall-setuid",
   "--without-python",
   "--without-systemd",
   "--without-udev",
@@ -45,3 +49,6 @@ install = ["DESTDIR=$OUT", "install"]
 [deps]
 build = ["gcc"]
 runtime = ["glibc"]
+
+[check]
+run = ["dmesg -t >/dev/null", "mount | test -n \"$(cat)\""]

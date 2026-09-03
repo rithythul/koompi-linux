@@ -11,6 +11,7 @@ kind = "target"
 [source]
 url = "https://github.com/davmac314/dinit/releases/download/v0.22.1/dinit-0.22.1.tar.xz"
 sha256 = "959b35c171452ecfbc09379b516517dadd675350eebc57ca54aebedda05d9adf"
+license = "Apache-2.0"
 
 [build]
 system = "configure"
@@ -32,7 +33,14 @@ install = ["install", "DESTDIR=$OUT"]
 # How dinit's configure knows it is cross-building: a build compiler that is
 # not the host compiler.
 CXX_FOR_BUILD = "g++"
+# Without this, the build-machine helper (mconfig-gen) is compiled by the
+# seed's g++ with the *target's* CXXFLAGS. On x86_64 the seed accepts them and
+# it passes; on aarch64 it stops at -mbranch-protection.
+CXXFLAGS_FOR_BUILD = "-O2"
 
 [deps]
 build = ["gcc"]
 runtime = ["glibc", "gcc-libs"]
+
+[check]
+run = ["test \"$(readlink /proc/1/exe)\" = /usr/bin/dinit", "dinitctl status console >/dev/null"]

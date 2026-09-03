@@ -34,7 +34,7 @@ pub fn check(engine: &Engine, target: &Target) -> Result<()> {
     let mut problems = Vec::new();
 
     for id in manifest.values().collect::<std::collections::BTreeSet<_>>() {
-        if !engine.store.is_built(id) {
+        if id != image::GENERATED && !engine.store.is_built(id) {
             problems.push(format!("{id}: in the manifest, but no such finished build"));
         }
     }

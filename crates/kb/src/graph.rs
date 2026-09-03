@@ -104,6 +104,7 @@ mod tests {
             source: Some(Source {
                 url: "u".into(),
                 sha256: "0".repeat(64),
+                license: "MIT".into(),
                 strip: 1,
             }),
             build: Build {
@@ -114,11 +115,13 @@ mod tests {
                 install: None,
                 env: vec![],
                 script: None,
+                remove: vec![],
             },
             deps: Deps {
                 build: build.iter().map(|s| s.to_string()).collect(),
                 runtime: runtime.iter().map(|s| s.to_string()).collect(),
             },
+            checks: vec![],
             path: PathBuf::from(format!("recipes/{name}.toml")),
             raw: Vec::new(),
         }

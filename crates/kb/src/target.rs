@@ -31,6 +31,12 @@ pub struct Target {
     pub kernel_config: PathBuf,
     /// what an image is assembled from, before runtime dependencies
     pub contents: Vec<String>,
+    /// DESIGN.md C5: hardening is policy, and policy that names an
+    /// architecture lives here
+    pub cflags: Vec<String>,
+    pub ldflags: Vec<String>,
+    /// DESIGN.md C6: the only files allowed to be setuid or setgid
+    pub setuid: Vec<String>,
     pub boot: Boot,
     kernel_config_digest: String,
 }
@@ -55,6 +61,9 @@ impl Target {
         let kernel_arch = r.str_req("kernel_arch")?.to_string();
         let kernel_config = PathBuf::from(r.str_req("kernel_config")?);
         let contents = r.strs("contents")?;
+        let cflags = r.strs("cflags")?;
+        let ldflags = r.strs("ldflags")?;
+        let setuid = r.strs("setuid")?;
         let boot = {
             let Some(mut b) = r.table_opt("boot")? else {
                 bail!("{origin}: a [boot] table is required")
@@ -85,6 +94,9 @@ impl Target {
             kernel_arch,
             kernel_config,
             contents,
+            cflags,
+            ldflags,
+            setuid,
             boot,
             kernel_config_digest: crate::sha256::digest(&config),
         })
@@ -93,7 +105,14 @@ impl Target {
     /// The fields a build depends on. Deliberately not the whole file: adding
     /// a package to an image must not invalidate the toolchain.
     pub fn build_identity(&self) -> String {
-        format!("{}\n{}\n{}\n", self.triple, self.arch, self.kernel_arch)
+        format!(
+            "{}\n{}\n{}\ncflags {}\nldflags {}\n",
+            self.triple,
+            self.arch,
+            self.kernel_arch,
+            self.cflags.join(" "),
+            self.ldflags.join(" ")
+        )
     }
 
     /// out of `build_identity` so a fragment edit rebuilds the kernel, not the toolchain
@@ -117,6 +136,9 @@ impl Target {
             kernel_arch: kernel_arch.into(),
             kernel_config: PathBuf::from("config/kernel/test.config"),
             contents: Vec::new(),
+            cflags: vec!["-D_FORTIFY_SOURCE=3".into()],
+            ldflags: vec!["-Wl,-z,relro,-z,now".into()],
+            setuid: Vec::new(),
             boot: Boot {
                 machine: "q35".into(),
                 cpu: None,

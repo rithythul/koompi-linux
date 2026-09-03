@@ -6,6 +6,7 @@ kind = "target"
 [source]
 url = "https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz"
 sha256 = "0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba"
+license = "GPL-3.0-or-later"
 
 [build]
 system = "configure"
@@ -22,7 +23,13 @@ configure = [
   "--disable-nls",
 ]
 install = ["DESTDIR=$OUT", "install"]
+# bashbug is a bug-report script with CFLAGS baked in; Makefile.inc is for
+# building loadable builtins against this bash. Neither belongs in an image.
+remove = ["usr/bin/bashbug", "usr/lib/bash/Makefile.inc"]
 
 [deps]
 build = ["gcc"]
 runtime = ["glibc"]
+
+[check]
+run = ["bash -c 'test $((1 + 1)) = 2'", "test -x /bin/sh"]
